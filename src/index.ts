@@ -15,6 +15,21 @@ app.post('/api/auth/register',async c=>{let body:any;try{body=await c.req.json()
 app.post('/api/auth/login',async c=>{let body:any;try{body=await c.req.json()}catch{return c.json({error:'Invalid request'},400)}const email=String(body.email||'').trim().toLowerCase(),password=String(body.password||'');const now=Date.now();const attempts=await c.env.DB.prepare('SELECT attempts,window_start,locked_until FROM auth_attempts WHERE email=?').bind(email).first<any>();if(attempts&&attempts.locked_until>now)return c.json({error:'Too many attempts. Try again later.'},429);const user=await c.env.DB.prepare('SELECT id,email,password_hash,salt FROM users WHERE email=?').bind(email).first<any>();const check=await passwordHash(password,user?.salt||'fallback');if(!user||!same(check,user.password_hash)){const within=attempts&&now-attempts.window_start<900000;const count=within?attempts.attempts+1:1;await c.env.DB.prepare('INSERT INTO auth_attempts(email,attempts,window_start,locked_until) VALUES(?,?,?,?) ON CONFLICT(email) DO UPDATE SET attempts=excluded.attempts,window_start=excluded.window_start,locked_until=excluded.locked_until').bind(email,count,within?attempts.window_start:now,count>=5?now+900000:0).run();return c.json({error:'Invalid credentials'},401)}await c.env.DB.prepare('DELETE FROM auth_attempts WHERE email=?').bind(email).run();await session(c,user.id);return c.json({user:{id:user.id,email:user.email}})});
 app.post('/api/auth/logout',async c=>{const token=getCookie(c,'civ_session');if(token)await c.env.DB.prepare('DELETE FROM sessions WHERE id_hash=?').bind(await digest(token)).run();deleteCookie(c,'civ_session',{path:'/'});return c.json({ok:true})});
 app.get('/api/me',async c=>{const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);const portfolio=await c.env.DB.prepare('SELECT cash_usdt,updated_at FROM portfolios WHERE user_id=?').bind(user.id).first();return c.json({user,portfolio,fundingEnabled:false,product:'The Big 7'})});
+app.get('/api/investor/overview',async c=>{
+  const user=await currentUser(c);
+  if(!user)return c.json({error:'Unauthorized'},401);
+  const [portfolio,events]=await Promise.all([
+    c.env.DB.prepare('SELECT cash_usdt,updated_at FROM portfolios WHERE user_id=?').bind(user.id).first<{cash_usdt:number,updated_at:string}>(),
+    c.env.DB.prepare('SELECT event_type,detail,created_at FROM audit_events WHERE user_id=? ORDER BY created_at DESC LIMIT 20').bind(user.id).all()
+  ]);
+  return c.json({
+    user,portfolio:{cashUsdt:Math.max(0,Number(portfolio?.cash_usdt||0)),updatedAt:portfolio?.updated_at||null},
+    holdings:[],holdingsSource:'No positions ledger has been activated',
+    activity:(events.results||[]).map((e:any)=>({type:e.event_type,at:e.created_at})),
+    fundingEnabled:false,withdrawalsEnabled:false,liveTradingEnabled:false,
+    notice:'Account data comes from CIV D1. No investments or returns are simulated in this view.'
+  });
+});
 const coins=[['BTC/USD','BTC','Bitcoin'],['ETH/USD','ETH','Ethereum'],['SOL/USD','SOL','Solana'],['XRP/USD','XRP','XRP'],['BNB/USD','BNB','BNB'],['ADA/USD','ADA','Cardano'],['DOGE/USD','DOGE','Dogecoin']] as const;
 app.get('/api/markets',async c=>{
   const key=c.env.TWELVE_DATA_API_KEY;
