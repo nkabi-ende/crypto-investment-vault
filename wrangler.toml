@@ -9,7 +9,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "civ-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "f0a267d4-f8dc-4106-a3d8-3e7f7453dce9"
 migrations_dir = "migrations"
 
 [vars]
