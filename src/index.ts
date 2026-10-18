@@ -43,6 +43,14 @@ app.get('/api/markets',async c=>{
     return c.json(JSON.parse(payload));
   }catch{return c.json({error:'Live market data temporarily unavailable. Check Twelve Data plan and supported crypto symbols.'},503)}
 });
+const disclosureCategories=['performance','custody','legal','fees','risk','team','withdrawals'] as const;
+app.get('/api/transparency',async c=>{
+  const disclosures=await c.env.DB.prepare("SELECT category,title,summary,status,evidence_url,verified_by,verified_at,published_at,updated_at FROM disclosures WHERE status IN ('published','verified') ORDER BY category,updated_at DESC").all();
+  const latest=await c.env.DB.prepare("SELECT period_start,period_end,net_return_pct,max_drawdown_pct,fees_pct,verification_url,verified_by,published_at FROM strategy_performance WHERE verification_url IS NOT NULL AND verified_by IS NOT NULL ORDER BY period_end DESC LIMIT 12").all();
+  const announcements=await c.env.DB.prepare("SELECT title,body,published_at FROM platform_announcements ORDER BY published_at DESC LIMIT 5").all();
+  const categories=disclosureCategories.map(category=>({category,items:(disclosures.results||[]).filter((d:any)=>d.category===category),status:(disclosures.results||[]).some((d:any)=>d.category===category)?'published':'not_published'}));
+  return c.json({asOf:new Date().toISOString(),fundingEnabled:false,liveTradingEnabled:false,categories,verifiedPerformance:latest.results||[],announcements:announcements.results||[],notice:'No publication is proof of independent verification unless the source and verifier are provided. Historical performance does not guarantee future returns.'});
+});
 app.all('/api/funding/*',c=>c.json({error:'Funding and withdrawals are not enabled'},403));
 app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',fundingEnabled:false,liveTradingEnabled:false}));
 app.all('/api/*',c=>c.json({error:'Not found'},404));
