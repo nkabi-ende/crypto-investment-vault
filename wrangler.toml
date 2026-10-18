@@ -1,0 +1,17 @@
+name = "civ-platform"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "civ-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[vars]
+APP_ORIGIN = "http://localhost:8787"
+FUNDING_ENABLED = "false"
