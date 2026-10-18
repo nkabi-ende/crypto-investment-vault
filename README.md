@@ -27,3 +27,15 @@ The Worker requests the `/quote` endpoint for BTC/USD, ETH/USD, SOL/USD, XRP/USD
 
 ## Authentication status
 Registration, login, secure HttpOnly SameSite cookies, database-backed session storage and temporary per-email login lockouts are implemented. Apply both D1 migrations before testing. This is **not yet production-approved**: add IP-based WAF rate limiting, bot protection/Turnstile, email verification, password recovery, MFA, CSRF tokens or strict origin policy for every mutating endpoint, account lifecycle controls, monitoring, tests, and security review. Current login lockouts alone are not a substitute for edge rate limiting.
+
+## Public investor transparency
+Migration `0003_transparency.sql` adds:
+- `disclosures`: category-specific legal, custody, fee, risk, management, withdrawal and performance evidence
+- `strategy_performance`: historical performance records requiring a verification URL and verifier before appearing publicly
+- `platform_announcements`: published operational updates
+
+`GET /api/transparency` powers the website's public disclosure register. Empty categories explicitly show **Not published**. The database is initially empty: no regulatory status, audit, custody arrangement, strategy track record or team credential is invented.
+
+**Publishing policy:** No public admin editing interface exists yet. Publish records only through a controlled, audited operational workflow after verifying evidence. This endpoint alone does not validate the authenticity of external verification links. Do not expose direct D1 write access or use the presence of a record as proof of compliance. An authenticated, role-restricted publishing workflow with approval history is a remaining production task.
+
+Run `npm run db:migrate:local` or `npm run db:migrate:remote` to apply all three migrations before testing the transparency endpoint.
