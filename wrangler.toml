@@ -13,5 +13,5 @@ database_id = "f0a267d4-f8dc-4106-a3d8-3e7f7453dce9"
 migrations_dir = "migrations"
 
 [vars]
-APP_ORIGIN = "http://localhost:8787"
+APP_ORIGIN = "https://cryptoinvestmentvault.com"
 FUNDING_ENABLED = "false"
