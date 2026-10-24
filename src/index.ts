@@ -45,6 +45,21 @@ app.put('/api/investor/preferences',async c=>{
  await c.env.DB.prepare('INSERT INTO audit_events(id,user_id,event_type,detail) VALUES(?,?,?,?)').bind(crypto.randomUUID(),user.id,'tier_preference_saved',JSON.stringify({entryTierUsd:amount})).run();
  return c.json({ok:true,entryTierUsd:amount,payoutCycle:'weekly',fundingEnabled:false,weeklyPayoutsEnabled:false});
 });
+app.get('/api/investor/ledger',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const entries=await c.env.DB.prepare('SELECT id,entry_type,asset,amount_minor,source_ref,occurred_at FROM ledger_entries WHERE user_id=? ORDER BY occurred_at DESC LIMIT 100').bind(user.id).all<any>();
+ const totals=await c.env.DB.prepare('SELECT COALESCE(SUM(amount_minor),0) AS balance_minor FROM ledger_entries WHERE user_id=?').bind(user.id).first<any>();
+ const requests=await c.env.DB.prepare('SELECT id,asset,amount_minor,destination_network,status,requested_at FROM withdrawal_requests WHERE user_id=? ORDER BY requested_at DESC LIMIT 30').bind(user.id).all<any>();
+ const balanceMinor=Number(totals?.balance_minor||0);
+ return c.json({asOf:new Date().toISOString(),currency:'USDT',balanceUsdt:balanceMinor/1000000,entries:(entries.results||[]).map((x:any)=>({id:x.id,type:x.entry_type,amountUsdt:x.amount_minor/1000000,asset:x.asset,sourceRef:x.source_ref,at:x.occurred_at})),withdrawalRequests:(requests.results||[]).map((x:any)=>({id:x.id,amountUsdt:x.amount_minor/1000000,asset:x.asset,network:x.destination_network,status:x.status,requestedAt:x.requested_at})),depositsEnabled:false,withdrawalsEnabled:false,payoutsEnabled:false,valuationPolicy:'Verified ledger entries only; no automatic yield credits'});
+});
+app.get('/api/investor/projection',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const principal=Number(c.req.query('principal')||100),rate=Number(c.req.query('dailyRate')||0),days=Number(c.req.query('days')||7);
+ if(![100,200].includes(principal)||!Number.isFinite(rate)||rate< -100||rate>100||!Number.isInteger(days)||days<1||days>365)return c.json({error:'Invalid projection parameters'},400);
+ const values=Array.from({length:days+1},(_,day)=>({day,valueUsd:Number((principal*Math.pow(1+rate/100,day)).toFixed(2))}));
+ return c.json({kind:'hypothetical_projection',principalUsd:principal,dailyRatePct:rate,days,values,weeklyDistribution:'Not calculated: actual distributable profits and fees are unknown',notice:'Illustration only. No actual investment return, account credit, guaranteed growth or payout.'});
+});
 const coinMap=[['bitcoin','BTC','Bitcoin'],['ethereum','ETH','Ethereum'],['solana','SOL','Solana'],['ripple','XRP','XRP'],['binancecoin','BNB','BNB'],['cardano','ADA','Cardano'],['dogecoin','DOGE','Dogecoin']] as const;
 app.get('/api/markets',async c=>{
   const key=c.env.COINGECKO_DEMO_API_KEY;
