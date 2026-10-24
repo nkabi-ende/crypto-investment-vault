@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-type Bindings = { DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string };
+type Bindings = { DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
 const app = new Hono<{Bindings:Bindings}>();
 const enc = new TextEncoder();
 const b64 = (bytes:Uint8Array)=> btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
@@ -60,6 +60,63 @@ app.get('/api/investor/projection',async c=>{
  const values=Array.from({length:days+1},(_,day)=>({day,valueUsd:Number((principal*Math.pow(1+rate/100,day)).toFixed(2))}));
  return c.json({kind:'hypothetical_projection',principalUsd:principal,dailyRatePct:rate,days,values,weeklyDistribution:'Not calculated: actual distributable profits and fees are unknown',notice:'Illustration only. No actual investment return, account credit, guaranteed growth or payout.'});
 });
+// MiniPay-compatible Celo Sepolia payment sandbox. Never credits the production ledger.
+const celoChainId=11142220;
+const addressPattern=/^0x[a-fA-F0-9]{40}$/;
+const hashPattern=/^0x[a-fA-F0-9]{64}$/;
+const transferTopic='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const topicAddress=(a:string)=>'0x'+'0'.repeat(24)+a.slice(2).toLowerCase();
+async function celoRpc(c:any,method:string,params:any[]){
+ const url=c.env.CELO_SEPOLIA_RPC_URL;
+ if(!url||!url.startsWith('https://'))throw Error('Celo Sepolia RPC is not configured');
+ const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),signal:AbortSignal.timeout(9000)});
+ if(!r.ok)throw Error('Blockchain RPC unavailable');
+ const d:any=await r.json();if(d.error||!d.result)throw Error('Blockchain RPC returned an error');return d.result;
+}
+app.get('/api/celo/config',c=>{
+ const token=c.env.CELO_TEST_USDC_ADDRESS,treasury=c.env.CELO_TEST_TREASURY_ADDRESS;
+ return c.json({mode:'testnet_only',network:'Celo Sepolia',chainId:celoChainId,tokenAddress:token&&addressPattern.test(token)?token:null,treasuryAddress:treasury&&addressPattern.test(treasury)?treasury:null,ready:Boolean(c.env.CELO_SEPOLIA_RPC_URL&&addressPattern.test(token||'')&&addressPattern.test(treasury||'')),liveDepositsEnabled:false,livePayoutsEnabled:false});
+});
+app.post('/api/celo/testnet/intents',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const configured=c.env.CELO_SEPOLIA_RPC_URL&&addressPattern.test(c.env.CELO_TEST_USDC_ADDRESS||'')&&addressPattern.test(c.env.CELO_TEST_TREASURY_ADDRESS||'');
+ if(!configured)return c.json({error:'Celo testnet token, treasury and RPC must be configured'},503);
+ let body:any;try{body=await c.req.json()}catch{return c.json({error:'Invalid JSON'},400)}
+ if(![100,200].includes(body?.amountUsd))return c.json({error:'Select 100 or 200 test USDC'},400);
+ const id=crypto.randomUUID();
+ await c.env.DB.prepare('INSERT INTO celo_testnet_deposit_intents(id,user_id,amount_minor) VALUES(?,?,?)').bind(id,user.id,body.amountUsd*1000000).run();
+ return c.json({id,mode:'testnet_only',chainId:celoChainId,tokenAddress:c.env.CELO_TEST_USDC_ADDRESS,treasuryAddress:c.env.CELO_TEST_TREASURY_ADDRESS,amountTestUsdc:body.amountUsd,status:'awaiting_transfer',notice:'Test tokens only. Never send real USDC to this address.'},201);
+});
+app.post('/api/celo/testnet/intents/:id/verify',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ let body:any;try{body=await c.req.json()}catch{return c.json({error:'Invalid JSON'},400)}
+ const tx=String(body?.txHash||'');if(!hashPattern.test(tx))return c.json({error:'Invalid transaction hash'},400);
+ const intent=await c.env.DB.prepare('SELECT id,amount_minor,status,tx_hash FROM celo_testnet_deposit_intents WHERE id=? AND user_id=?').bind(c.req.param('id'),user.id).first<any>();
+ if(!intent)return c.json({error:'Intent not found'},404);
+ if(intent.status==='observed')return c.json({status:'observed',txHash:intent.tx_hash,mode:'testnet_only'});
+ if(!addressPattern.test(c.env.CELO_TEST_USDC_ADDRESS||'')||!addressPattern.test(c.env.CELO_TEST_TREASURY_ADDRESS||''))return c.json({error:'Testnet contract configuration missing'},503);
+ const prior=await c.env.DB.prepare('SELECT id FROM celo_testnet_deposit_intents WHERE tx_hash=?').bind(tx).first();
+ if(prior)return c.json({error:'Transaction already used'},409);
+ try{
+ const chain=await celoRpc(c,'eth_chainId',[]);
+ if(parseInt(chain,16)!==celoChainId)return c.json({error:'RPC chain mismatch'},503);
+ const receipt:any=await celoRpc(c,'eth_getTransactionReceipt',[tx]);
+ if(receipt.status!=='0x1')return c.json({error:'Transaction was not successful'},422);
+ const tip=parseInt(await celoRpc(c,'eth_blockNumber',[]),16),block=parseInt(receipt.blockNumber,16);
+ if(!Number.isSafeInteger(tip)||!Number.isSafeInteger(block)||tip-block<5)return c.json({error:'Waiting for at least 6 confirmations'},409);
+ const matching=(receipt.logs||[]).some((log:any)=>String(log.address).toLowerCase()===c.env.CELO_TEST_USDC_ADDRESS.toLowerCase()&&String(log.topics?.[0]).toLowerCase()===transferTopic&&String(log.topics?.[2]).toLowerCase()===topicAddress(c.env.CELO_TEST_TREASURY_ADDRESS)&&BigInt(log.data||'0x0')===BigInt(intent.amount_minor));
+ if(!matching)return c.json({error:'No matching test-token transfer to configured treasury'},422);
+ const updated=await c.env.DB.prepare("UPDATE celo_testnet_deposit_intents SET status='observed',tx_hash=?,verified_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND status='awaiting_transfer'").bind(tx,intent.id,user.id).run();
+ if(!updated.meta.changes)return c.json({error:'Intent already processed'},409);
+ return c.json({status:'observed',txHash:tx,confirmations:tip-block+1,mode:'testnet_only',creditedToInvestorBalance:false});
+ }catch(e){return c.json({error:'Unable to verify transaction on Celo Sepolia'},503)}
+});
+app.get('/api/celo/testnet/intents',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const rows=await c.env.DB.prepare('SELECT id,amount_minor,status,tx_hash,created_at,verified_at FROM celo_testnet_deposit_intents WHERE user_id=? ORDER BY created_at DESC LIMIT 30').bind(user.id).all();
+ return c.json({mode:'testnet_only',intents:(rows.results||[]).map((x:any)=>({id:x.id,amountTestUsdc:x.amount_minor/1000000,status:x.status,txHash:x.tx_hash,createdAt:x.created_at,verifiedAt:x.verified_at})),liveBalanceCredits:false});
+});
+app.get('/api/celo/payout-signer/status',c=>c.json({mode:'disabled',mainnetSigningEnabled:false,testnetSigningEnabled:false,reason:'Signer must be isolated in a separate, authenticated treasury service with dual approval and hardware-backed keys. No signing key is stored in the public web worker.'}));
 const coinMap=[['bitcoin','BTC','Bitcoin'],['ethereum','ETH','Ethereum'],['solana','SOL','Solana'],['ripple','XRP','XRP'],['binancecoin','BNB','BNB'],['cardano','ADA','Cardano'],['dogecoin','DOGE','Dogecoin']] as const;
 app.get('/api/markets',async c=>{
   const key=c.env.COINGECKO_DEMO_API_KEY;
