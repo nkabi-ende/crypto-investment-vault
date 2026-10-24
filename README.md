@@ -12,18 +12,28 @@ Cloudflare Workers + D1 + static assets starter. Database-backed authentication,
 
 ## Security work before public launch
 - Add Turnstile, rate limiting, email verification, password reset, MFA, account lockout, CSRF protection, monitoring, backups, and independent security review.
-- CoinGecko public API may rate-limit; add provider caching/fallback and monitoring.
+- CoinGecko Demo API may rate-limit; five-minute edge caching is implemented. Add monitoring and a verified stale-quote policy before scale.
 - Funding endpoints always reject requests regardless of `FUNDING_ENABLED`; custody, compliance, ledger and reconciliation are not implemented.
 - USDT and USD are different assets. Do not assume a fixed USDT/ZAR conversion.
 - D1 is used for the starter account database, not a production financial ledger.
 
-## Twelve Data market data
-Set the Twelve Data key as a **Worker secret**, never in the frontend or wrangler.toml:
+## CoinGecko Demo market data
+Set the CoinGecko Demo key as a **Cloudflare Worker secret** named `COINGECKO_DEMO_API_KEY`, never in browser code, `wrangler.toml`, or the GitHub repository:
+
 ```sh
-npx wrangler secret put TWELVE_DATA_API_KEY
+npx wrangler secret put COINGECKO_DEMO_API_KEY
 ```
-For local development, create a gitignored `.dev.vars` file containing `TWELVE_DATA_API_KEY=...`.
-The Worker requests the `/quote` endpoint for BTC/USD, ETH/USD, SOL/USD, XRP/USD, BNB/USD, ADA/USD, and DOGE/USD. Quotes are cached at the edge for 60 seconds. Seven upstream quote requests per refresh can exceed some Twelve Data plan limits; check entitlement and use a bulk endpoint if available. Market availability and symbol formats must be validated with your plan. No key is needed in the browser.
+
+The Worker requests `/api/v3/coins/markets` from `api.coingecko.com` with the `x-cg-demo-api-key` header, retrieving BTC, ETH, SOL, XRP, BNB, ADA, DOGE in **one** request. Successful responses are cached at the Cloudflare edge for five minutes. The public Big 7 watchlist and logged-in dashboard use the same `/api/markets` endpoint. Prices are indicative **USD spot** quotes, while the embedded TradingView charts use exchange **USDT pairs** and may differ slightly.
+
+If the key is missing or the provider is unavailable, the endpoint responds with HTTP 503 and a safe error code; the UI displays an unavailable state instead of inventing prices. The API key must never be returned to the browser. Check CoinGecko's current Demo tier, commercial licensing, attribution and rate limits before a wider launch. Remove the obsolete `TWELVE_DATA_API_KEY` secret from Cloudflare if it exists.
+
+### Verification after deployment
+1. Visit `https://cryptoinvestmentvault.com/api/status` and confirm both funding and live trading are disabled.
+2. Visit `https://cryptoinvestmentvault.com/api/markets` and confirm `source: "CoinGecko"`, seven assets and an `asOf` timestamp. If HTTP 503, check the Worker secret and Cloudflare logs.
+3. Visit the homepage and confirm seven USD quotes load on the market terminal while TradingView charts remain usable.
+4. Register/login with a test account, confirm the investor dashboard, account activity and logout; never use demo portfolio figures as real holdings.
+5. Confirm GitHub Actions deployed the latest commit, D1 migrations succeeded, and the custom domain routes to this Worker.
 
 ## Authentication status
 Registration, login, secure HttpOnly SameSite cookies, database-backed session storage and temporary per-email login lockouts are implemented. Apply both D1 migrations before testing. This is **not yet production-approved**: add IP-based WAF rate limiting, bot protection/Turnstile, email verification, password recovery, MFA, CSRF tokens or strict origin policy for every mutating endpoint, account lifecycle controls, monitoring, tests, and security review. Current login lockouts alone are not a substitute for edge rate limiting.
