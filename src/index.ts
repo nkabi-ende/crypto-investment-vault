@@ -30,6 +30,21 @@ app.get('/api/investor/overview',async c=>{
     notice:'Account data comes from CIV D1. No investments or returns are simulated in this view.'
   });
 });
+app.get('/api/investor/preferences',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const selected=await c.env.DB.prepare('SELECT entry_tier_usd,payout_cycle,acknowledgement_at,updated_at FROM investor_preferences WHERE user_id=?').bind(user.id).first<any>();
+ return c.json({preference:selected?{entryTierUsd:selected.entry_tier_usd,payoutCycle:selected.payout_cycle,acknowledgedAt:selected.acknowledgement_at,updatedAt:selected.updated_at}:null,availableTiersUsd:[100,200],fundingEnabled:false,weeklyPayoutsEnabled:false});
+});
+app.put('/api/investor/preferences',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ let body:any;try{body=await c.req.json()}catch{return c.json({error:'Invalid JSON'},400)}
+ const amount=body?.entryTierUsd;
+ if(!Number.isInteger(amount)||![100,200].includes(amount)||body?.acknowledgeRisk!==true)return c.json({error:'Select $100 or $200 and acknowledge the risk notice'},400);
+ const now=new Date().toISOString();
+ await c.env.DB.prepare("INSERT INTO investor_preferences(user_id,entry_tier_usd,payout_cycle,acknowledgement_at,updated_at) VALUES(?,?,'weekly',?,?) ON CONFLICT(user_id) DO UPDATE SET entry_tier_usd=excluded.entry_tier_usd,acknowledgement_at=excluded.acknowledgement_at,updated_at=excluded.updated_at").bind(user.id,amount,now,now).run();
+ await c.env.DB.prepare('INSERT INTO audit_events(id,user_id,event_type,detail) VALUES(?,?,?,?)').bind(crypto.randomUUID(),user.id,'tier_preference_saved',JSON.stringify({entryTierUsd:amount})).run();
+ return c.json({ok:true,entryTierUsd:amount,payoutCycle:'weekly',fundingEnabled:false,weeklyPayoutsEnabled:false});
+});
 const coinMap=[['bitcoin','BTC','Bitcoin'],['ethereum','ETH','Ethereum'],['solana','SOL','Solana'],['ripple','XRP','XRP'],['binancecoin','BNB','BNB'],['cardano','ADA','Cardano'],['dogecoin','DOGE','Dogecoin']] as const;
 app.get('/api/markets',async c=>{
   const key=c.env.COINGECKO_DEMO_API_KEY;
