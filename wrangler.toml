@@ -2,6 +2,8 @@ name = "crypto-investment-vault"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
 
+compatibility_flags = ["nodejs_compat"]
+
 [assets]
 directory = "./public"
 binding = "ASSETS"
@@ -15,3 +17,8 @@ migrations_dir = "migrations"
 [vars]
 APP_ORIGIN = "https://cryptoinvestmentvault.com"
 FUNDING_ENABLED = "false"
+CELO_SEPOLIA_RPC_URL = "https://forno.celo-sepolia.celo-testnet.org"
+CELO_TEST_USDC_ADDRESS = "0x01C5C0122039549AD1493B8220cABEdD739BC44E"
+
+[triggers]
+crons = ["*/5 * * * *"]
