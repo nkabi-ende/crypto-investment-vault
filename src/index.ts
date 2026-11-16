@@ -147,7 +147,8 @@ app.post('/api/payments/quotes',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
  const {success}=await c.env.AUTH_LIMITER.limit({key:'payments:'+user.id});if(!success)return c.json({error:'Please wait before requesting another quote'},429);
  const body=await c.req.json().catch(()=>null);
- if(!['USDT','USDC'].includes(body?.symbol)||typeof body?.sender!=='string'||![100,200].includes(body?.amount))return c.json({error:'Choose USDT or USDC and open MiniPay'},400);
+ const config=paymentConfig(c.env);
+ if(!config.supportedTokens.includes(body?.symbol)||typeof body?.sender!=='string'||!config.depositPresets.includes(body?.amount))return c.json({error:'Choose a supported token and amount for the selected network'},400);
  try{return c.json(await createQuote(c.env,user.id,body.symbol,body.sender,body.amount),201)}catch(error){console.error('Quote unavailable',error instanceof Error?error.message:'error');return c.json({error:'Payment quote unavailable. Check payment setup or try again shortly.'},503)}
 });
 app.post('/api/payments/quotes/:id/verify',async c=>{
@@ -390,7 +391,7 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT user_id,status FROM referral_wallet LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,status FROM manual_deposit_claims LIMIT 0')
  ]);
- return c.json({ready:true,schema:12,membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:12,membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.

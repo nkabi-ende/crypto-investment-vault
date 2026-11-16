@@ -1,10 +1,11 @@
 /** Exact-amount MiniPay payments. Receiving only: this Worker holds no wallet signing keys. */
-export type PaymentEnv={DB:D1Database;PAYMENTS_ENABLED?:string;PAYMENT_MODE?:string;CELO_MAINNET_RPC_URL?:string;CELO_MAINNET_TREASURY_ADDRESS?:string;CELO_SEPOLIA_RPC_URL?:string;CELO_TEST_TREASURY_ADDRESS?:string;COINGECKO_DEMO_API_KEY?:string};
+export type PaymentEnv={DB:D1Database;PAYMENTS_ENABLED?:string;PAYMENT_MODE?:string;CELO_MAINNET_RPC_URL?:string;CELO_MAINNET_TREASURY_ADDRESS?:string;CELO_SEPOLIA_RPC_URL?:string;CELO_TEST_TREASURY_ADDRESS?:string;CELO_TEST_USDC_ADDRESS?:string;COINGECKO_DEMO_API_KEY?:string};
 const address=/^0x[a-f0-9]{40}$/i;
 export const validWallet=(value:unknown):value is string=>typeof value==='string'&&address.test(value)&&!/^0x0{40}$/i.test(value);
 const tokens={USDT:'0x48065fbbe25f71c9282ddf5e1cd6d6a887483d5e',USDC:'0xceba9300f2b948710d2653dd7b07f33a8b32118c'};
 const feeAdapters={USDT:'0x0e2a3e05bc9a16f5292a6170456a710cb89c6f72',USDC:'0x2f25deb3848c207fc8e0c34035b3ba7fc157602b'};
-const testUSDC='0x01c5c0122039549ad1493b8220cabedd739bc44e';
+// Official Celo Sepolia USDC used by MiniPay (not a third-party sandbox token).
+export const testUSDC='0x2f25deb3848c207fc8e0c34035b3ba7fc157602b';
 const transferTopic='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const padAddress=(a:string)=>'0x'+a.slice(2).padStart(64,'0');
 export function paymentConfig(env:PaymentEnv){
@@ -13,7 +14,7 @@ export function paymentConfig(env:PaymentEnv){
  const rpc=production?env.CELO_MAINNET_RPC_URL:env.CELO_SEPOLIA_RPC_URL;
  const ready=env.PAYMENTS_ENABLED==='true'&&validWallet(treasury)&&!!rpc?.startsWith('https://');
  return {mode:production?'production':'testnet',chainId,ready,liveDepositsEnabled:production&&ready,
-  supportedTokens:production?['USDT','USDC']:['USDC'],quoteLifetimeSeconds:300,minimumDeposit:100,depositPresets:[100,200],depositCurrency:'USDC_OR_USDT',platformToken:false,
+  supportedTokens:production?['USDT','USDC']:['USDC'],quoteLifetimeSeconds:300,minimumDeposit:production?100:1,depositPresets:production?[100,200]:[1,2],depositCurrency:'USDC_OR_USDT',platformToken:false,
   treasury:validWallet(treasury)?treasury.toLowerCase():null,rpc};
 }
 export function paymentData(q:any){return '0xa9059cbb'+q.treasury.slice(2).padStart(64,'0')+BigInt(q.token_minor).toString(16).padStart(64,'0')+q.id.replaceAll('-','')}
@@ -24,27 +25,30 @@ async function rpc(env:PaymentEnv,chain:number,method:string,params:any[]):Promi
  if(!r.ok)throw Error('Payment RPC unavailable');const d:any=await r.json();if(d.error)throw Error('Payment RPC error');return d.result;
 }
 async function chainCheck(env:PaymentEnv,chain:number){if(Number(await rpc(env,chain,'eth_chainId',[]))!==chain)throw Error('Unexpected payment network')}
-export function presentQuote(q:any){return {id:q.id,chainId:q.chain_id,symbol:q.symbol,amount:q.token_minor/1e6,tokenMinor:String(q.token_minor),purpose:q.purpose,depositAmount:(q.funding_minor||0)/1e6,pricing:q.purpose==='funding'?'exact_token_units':'legacy_zar_quote',expiresAt:q.expires_at,status:q.status,txHash:q.tx_hash,reviewReason:q.review_reason,transaction:{to:q.token,data:paymentData(q),value:'0x0',feeCurrency:q.chain_id===42220?feeAdapters[q.symbol as keyof typeof feeAdapters]:'0x4822e58de6f5e485ef90df51c41ce01721331dc0'}}}
+export function presentQuote(q:any){return {id:q.id,chainId:q.chain_id,symbol:q.symbol,amount:q.token_minor/1e6,tokenMinor:String(q.token_minor),purpose:q.purpose,depositAmount:(q.funding_minor??q.token_minor)/1e6,pricing:q.purpose==='funding'?'exact_token_units':'legacy_zar_quote',expiresAt:q.expires_at,status:q.status,txHash:q.tx_hash,reviewReason:q.review_reason,transaction:{to:q.token,data:paymentData(q),value:'0x0',feeCurrency:q.chain_id===42220?feeAdapters[q.symbol as keyof typeof feeAdapters]:'0x4822e58de6f5e485ef90df51c41ce01721331dc0'}}}
 export async function createQuote(env:PaymentEnv,userId:string,symbol:string,sender:string,amount=100){
  const config=paymentConfig(env);
  if(!config.ready)throw Error('Payment collection is awaiting configuration');
- if(![100,200].includes(amount))throw Error('Select a 100 or 200 stablecoin deposit');
+ if(!config.depositPresets.includes(amount))throw Error('Select a supported deposit amount for the active network');
  if(!config.supportedTokens.includes(symbol)||!validWallet(sender)||sender.toLowerCase()===config.treasury)throw Error('Choose a supported token and paying wallet');
  const member=await env.DB.prepare('SELECT id FROM users WHERE id=?').bind(userId).first();if(!member)throw Error('Membership record unavailable');
  const now=Date.now();
  const pending=await env.DB.prepare("SELECT id FROM payment_quotes WHERE user_id=? AND chain_id=? AND status='submitted' LIMIT 1").bind(userId,config.chainId).first();if(pending)throw Error('A payment is awaiting verification');
- const existing=await env.DB.prepare("SELECT * FROM payment_quotes WHERE user_id=? AND chain_id=? AND purpose='funding' AND funding_minor=? AND symbol=? AND sender=? AND treasury=? AND expires_at>? AND status='awaiting_payment' ORDER BY created_at DESC LIMIT 1").bind(userId,config.chainId,amount*1000000,symbol,sender.toLowerCase(),config.treasury,now+30000).first();if(existing)return presentQuote(existing);
+ const existing=await env.DB.prepare("SELECT * FROM payment_quotes WHERE user_id=? AND chain_id=? AND purpose='funding' AND COALESCE(funding_minor,token_minor)=? AND symbol=? AND sender=? AND treasury=? AND expires_at>? AND status='awaiting_payment' ORDER BY created_at DESC LIMIT 1").bind(userId,config.chainId,amount*1000000,symbol,sender.toLowerCase(),config.treasury,now+30000).first();if(existing)return presentQuote(existing);
  await chainCheck(env,config.chainId);
+ if(config.chainId!==42220&&env.CELO_TEST_USDC_ADDRESS?.toLowerCase()!==testUSDC)throw Error('Testnet token configuration is missing or incorrect');
  const token=config.chainId===42220?tokens[symbol as keyof typeof tokens]:testUSDC;
  const decimals=await rpc(env,config.chainId,'eth_call',[{to:token,data:'0x313ce567'},'latest']);if(Number(decimals)!==6)throw Error('Unexpected token decimals');
  const block=Number(await rpc(env,config.chainId,'eth_blockNumber',[]));
  if(!Number.isSafeInteger(block)||block<1)throw Error('Payment network unavailable');
  const q={id:crypto.randomUUID(),chain_id:config.chainId,symbol,token,treasury:config.treasury,sender:sender.toLowerCase(),token_minor:amount*1000000,zar_minor:1,rate_micro_zar:1,rate_source:'token_units',rate_at:now,created_at:now,expires_at:now+300000,next_block:block,status:'awaiting_payment',tx_hash:null};
- await env.DB.prepare('INSERT INTO payment_quotes(id,user_id,chain_id,symbol,token,treasury,sender,token_minor,zar_minor,rate_micro_zar,rate_source,rate_at,created_at,expires_at,next_block,updated_at,purpose,funding_minor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(q.id,userId,q.chain_id,q.symbol,q.token,q.treasury,q.sender,q.token_minor,q.zar_minor,q.rate_micro_zar,q.rate_source,q.rate_at,now,q.expires_at,block,now,'funding',q.token_minor).run();
- return presentQuote({...q,purpose:'funding',funding_minor:q.token_minor});
+ await env.DB.prepare('INSERT INTO payment_quotes(id,user_id,chain_id,symbol,token,treasury,sender,token_minor,zar_minor,rate_micro_zar,rate_source,rate_at,created_at,expires_at,next_block,updated_at,purpose,funding_minor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(q.id,userId,q.chain_id,q.symbol,q.token,q.treasury,q.sender,q.token_minor,q.zar_minor,q.rate_micro_zar,q.rate_source,q.rate_at,now,q.expires_at,block,now,'funding',config.chainId===42220?q.token_minor:null).run();
+ return presentQuote({...q,purpose:'funding',funding_minor:config.chainId===42220?q.token_minor:null});
 }
 export async function verifyQuote(env:PaymentEnv,q:any,hash:string){
- if(q.purpose!=='funding'||q.funding_minor!==q.token_minor||q.token_minor<100000000){await env.DB.prepare("UPDATE payment_quotes SET status='review',review_reason='legacy_quote_retired' WHERE id=? AND status NOT IN ('verified','verified_test')").bind(q.id).run();return {status:'review',reviewReason:'legacy_quote_retired'}}
+ const realFunding=q.chain_id===42220&&q.funding_minor===q.token_minor&&[100000000,200000000].includes(q.token_minor);
+ const sandboxFunding=q.chain_id===11142220&&q.funding_minor===null&&q.symbol==='USDC'&&q.token?.toLowerCase()===testUSDC&&[1000000,2000000].includes(q.token_minor);
+ if(q.purpose!=='funding'||(!realFunding&&!sandboxFunding)){await env.DB.prepare("UPDATE payment_quotes SET status='review',review_reason='legacy_quote_retired' WHERE id=? AND status NOT IN ('verified','verified_test')").bind(q.id).run();return {status:'review',reviewReason:'legacy_quote_retired'}}
  if(q.status==='verified'||q.status==='verified_test'||q.status==='review')return presentQuote(q);
  await chainCheck(env,q.chain_id);
  const tx=await rpc(env,q.chain_id,'eth_getTransactionByHash',[hash]);

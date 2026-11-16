@@ -14,9 +14,11 @@ const server=createServer(async(req,res)=>{
  if(path==='/api/auth/register'||path==='/api/auth/login'){res.setHeader('Set-Cookie','ui_member=1; Path=/; HttpOnly; SameSite=Lax');return reply({user:{id,email:'preview@example.invalid'}})}
  if(path==='/api/me'){if(req.headers['x-ui-auth']==='0'&&!String(req.headers.cookie||'').includes('ui_member=1')){res.statusCode=401;return reply({error:'Unauthorized'})}return reply({user:{id,email:'preview@example.invalid'}})}
  if(path==='/api/investor/onboarding')return reply({name:'CIV Member',memberId:id,welcomeEmail:'awaiting_provider',activated:false,signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000},balances:[],promotion:{currency:'ZAR',amountMinor:50000,status:'requires_deposit',withdrawable:false},referralWallet:{amountMinor:100000,suspendedMinor:0},referral:{code:'a1b2c3d4e5',url:'https://cryptoinvestmentvault.com/r/a1b2c3d4e5',registrations:0,qualified:0,pending:0},perks:[]});
- if(path==='/api/payments/config')return reply({mode:'production',chainId:42220,ready:true,liveDepositsEnabled:true,supportedTokens:['USDT','USDC']});
+ if(path==='/api/payments/config')return req.headers['x-ui-sandbox']==='1'
+  ?reply({mode:'testnet',chainId:11142220,ready:true,liveDepositsEnabled:false,supportedTokens:['USDC'],depositPresets:[1,2]})
+  :reply({mode:'production',chainId:42220,ready:true,liveDepositsEnabled:true,supportedTokens:['USDT','USDC'],depositPresets:[100,200]});
  if(path==='/api/payments/wallet')return reply({memberId:id,chainId:42220,ready:true,address:'0x'+'2'.repeat(40)});
- if(path==='/api/payments/quotes'&&req.method==='POST'){let body='';for await(const chunk of req)body+=chunk;lastQuoteBody=JSON.parse(body);return reply({id:'preview-quote',purpose:'funding',chainId:42220,symbol:lastQuoteBody.symbol,amount:lastQuoteBody.amount,tokenMinor:String(lastQuoteBody.amount*1e6),expiresAt:Date.now()+300000,transaction:{to:'0x'+'3'.repeat(40),data:'0x',value:'0x0'}})}
+ if(path==='/api/payments/quotes'&&req.method==='POST'){let body='';for await(const chunk of req)body+=chunk;lastQuoteBody=JSON.parse(body);return reply({id:'preview-quote',purpose:'funding',chainId:req.headers['x-ui-sandbox']==='1'?11142220:42220,symbol:lastQuoteBody.symbol,amount:lastQuoteBody.amount,tokenMinor:String(lastQuoteBody.amount*1e6),expiresAt:Date.now()+300000,transaction:{to:'0x'+'3'.repeat(40),data:'0x',value:'0x0'}})}
  if(path==='/api/payments/quotes')return reply({quotes:[]});
  if(path==='/api/investor/overview')return reply({user:{id,email:'preview@example.invalid'},portfolio:{cashUsdt:0},fundingBalances:[],holdings:[],activity:[]});
  if(path==='/api/investor/ledger')return reply({balanceUsdt:0,balanceUsdc:0,entries:[],withdrawalRequests:[]});
@@ -50,5 +52,22 @@ try{
  const context=await browser.newContext({viewport:{width:390,height:844},reducedMotion:'reduce',extraHTTPHeaders:{'x-ui-auth':'0'}});const page=await context.newPage();await page.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());await page.goto(origin+'/join');await page.locator('#authForm').waitFor();const authHeader=await page.locator('.auth .top').boundingBox(),authTitle=await page.locator('#authTitle').boundingBox();assert.ok(authHeader.y+authHeader.height<=authTitle.y,'Signup header must not overlap its title');assert.equal(await page.locator('.site-footer').count(),1);assert.equal(await page.locator('#signupDepositNotice').isVisible(),true);assert.match(await page.locator('#signupDepositNotice').innerText(),/Minimum deposit: 100/);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);await page.screenshot({path:'artifacts/ui/mobile-signup.png'});
  await page.locator('#fullName').fill('Preview Member');await page.locator('#email').fill('preview@example.invalid');await page.locator('#password').fill('isolated-ui-fixture-password');await page.locator('#acceptTerms').check();await page.locator('#submit').click();await page.locator('#vaultLoader').waitFor({state:'visible'});await page.screenshot({path:'artifacts/ui/mobile-signup-loader.png'});await page.locator('#vaultLoader').waitFor({state:'hidden'});await expect(page.locator('#dashboard')).toBeVisible();assert.equal(await page.locator('#dashboard').getAttribute('aria-busy'),null);
  await context.clearCookies();await page.goto(origin+'/dashboard');await page.locator('#authForm').waitFor();await page.locator('#email').fill('preview@example.invalid');await page.locator('#password').fill('isolated-ui-fixture-password');await page.locator('#submit').click();await page.locator('#vaultLoader').waitFor({state:'visible'});await page.locator('#vaultLoader').waitFor({state:'hidden'});await expect(page.locator('#dashboard')).toBeVisible();await context.close();
- console.log('Mobile UI passed: 320, 390, 768, 1280px; navigation, amount selection, wallet privacy, signup and quote review.');
+ const sandboxContext=await browser.newContext({viewport:{width:390,height:844},reducedMotion:'reduce',extraHTTPHeaders:{'x-ui-sandbox':'1'}});
+ const sandboxPage=await sandboxContext.newPage();
+ await sandboxPage.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());
+ await sandboxPage.addInitScript(()=>{window.ethereum={isMiniPay:true,request:async({method})=>{if(method==='eth_chainId')return '0x'+(11142220).toString(16);if(method==='eth_accounts')return ['0x'+'1'.repeat(40)];throw Error('Unexpected wallet request')}}});
+ await sandboxPage.goto(origin+'/dashboard');
+ await sandboxPage.locator('#vaultLoader').waitFor({state:'hidden'});
+ await sandboxPage.locator('[data-vault-tab="deposits"]').click();
+ await expect(sandboxPage.locator('#depositAmountHeadline')).toContainText('Test with 1 or 2 USDC');
+ await expect(sandboxPage.locator('[data-deposit-amount="1"]')).toContainText('TEST USDC');
+ await expect(sandboxPage.locator('#collectionHelp')).toContainText('real deposits remain disabled');
+ await sandboxPage.locator('[data-deposit-amount="2"]').click();
+ await sandboxPage.locator('#signupQuote').click();
+ await expect(sandboxPage.locator('#paymentQuoteSummary')).toContainText('TEST ONLY: 2.000000 USDC');
+ assert.equal(lastQuoteBody.amount,2);assert.equal(lastQuoteBody.symbol,'USDC');
+ assert.equal(await sandboxPage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+ await sandboxPage.screenshot({path:'artifacts/ui/mobile-testnet-deposit.png'});
+ await sandboxContext.close();
+ console.log('Mobile UI passed: 320, 390, 768, 1280px and isolated 1/2 USDC Sepolia sandbox; navigation, amount selection, wallet privacy, signup and quote review.');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve))}

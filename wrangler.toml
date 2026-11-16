@@ -23,7 +23,7 @@ PAYMENT_MODE = "testnet"
 CELO_MAINNET_RPC_URL = "https://forno.celo.org"
 EMAIL_DELIVERY_ENABLED = "false"
 CELO_SEPOLIA_RPC_URL = "https://forno.celo-sepolia.celo-testnet.org"
-CELO_TEST_USDC_ADDRESS = "0x01C5C0122039549AD1493B8220cABEdD739BC44E"
+CELO_TEST_USDC_ADDRESS = "0x2F25deB3848C207fc8E0c34035B3Ba7fC157602B"
 
 [triggers]
 crons = ["*/5 * * * *"]
