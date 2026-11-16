@@ -173,7 +173,7 @@ test('stablecoin deposits activate membership, preserve token balances and isola
   await assert.rejects(p.createQuote(testEnv,other.data.user.id,'USDC',sender,100),/supported deposit amount/);
   await assert.rejects(p.createQuote({...testEnv,CELO_TEST_USDC_ADDRESS:'0x'+'1'.repeat(40)},other.data.user.id,'USDC',sender,1),/token configuration/);
   const test=await p.createQuote(testEnv,other.data.user.id,'USDC',sender,1);
-  q=await stored(test);assert.equal(test.tokenMinor,'1000000');assert.equal(q.token,p.testUSDC);
+  q=await stored(test);assert.equal(test.tokenMinor,'1000000');assert.equal(test.depositAmount,1);assert.equal(q.token,p.testUSDC);assert.equal(q.funding_minor,null,'Sandbox quotes must not store production funding values');
   assert.equal((await p.verifyQuote(env,q,hash)).status,'verified_test');
   assert.equal((await onboard(other)).activated,false);
   assert.deepEqual((await onboard(other)).balances,[]);
