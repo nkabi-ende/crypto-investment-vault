@@ -81,7 +81,7 @@ app.post('/api/auth/register',async c=>{
   if(String(error).includes('UNIQUE constraint failed: users.email'))return c.json({error:'Unable to create account. Try signing in or use another email.'},409);
   throw error;
  }
- return c.json({user:{id,email,name},referral:{code:id,url:new URL('/r/'+id,c.env.APP_ORIGIN).href},signupDeposit:{currency:'ZAR',requiredMinor:50000,status:'awaiting_payment',collectionEnabled:false},welcomeEmail:envEmailStatus(c.env)},201);
+ return c.json({user:{id,email,name},referral:{code:id,url:new URL('/r/'+id,c.env.APP_ORIGIN).href},signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000,status:'awaiting_payment',collectionEnabled:false},welcomeEmail:envEmailStatus(c.env)},201);
 });
 function envEmailStatus(env:Bindings){return env.EMAIL_DELIVERY_ENABLED==='true'&&env.RESEND_API_KEY&&env.EMAIL_FROM?'queued':'awaiting_provider'}
 app.post('/api/auth/login',async c=>{
@@ -111,12 +111,12 @@ app.get('/api/me',async c=>{const user=await currentUser(c);if(!user)return c.js
 app.get('/api/investor/overview',async c=>{
   const user=await currentUser(c);
   if(!user)return c.json({error:'Unauthorized'},401);
-  const [portfolio,events]=await Promise.all([
+  const [portfolio,events,funding]=await Promise.all([
     c.env.DB.prepare('SELECT cash_usdt,updated_at FROM portfolios WHERE user_id=?').bind(user.id).first<{cash_usdt:number,updated_at:string}>(),
-    c.env.DB.prepare('SELECT event_type,detail,created_at FROM audit_events WHERE user_id=? ORDER BY created_at DESC LIMIT 20').bind(user.id).all()
+    c.env.DB.prepare('SELECT event_type,detail,created_at FROM audit_events WHERE user_id=? ORDER BY created_at DESC LIMIT 20').bind(user.id).all(),membership(c.env.DB,user.id)
   ]);
   return c.json({
-    user,portfolio:{cashUsdt:Math.max(0,Number(portfolio?.cash_usdt||0)),updatedAt:portfolio?.updated_at||null},
+    user,fundingBalances:funding.balances,portfolio:{cashUsdt:Math.max(0,Number(portfolio?.cash_usdt||0)),updatedAt:portfolio?.updated_at||null},
     holdings:[],holdingsSource:'No positions ledger has been activated',
     activity:(events.results||[]).map((e:any)=>({type:e.event_type,at:e.created_at})),
     fundingEnabled:false,withdrawalsEnabled:false,liveTradingEnabled:false,
@@ -132,7 +132,7 @@ app.get('/api/investor/onboarding',async c=>{
  ]);
  return c.json({name:profile?.display_name||null,memberId:user.id,termsAcceptedAt:profile?.terms_accepted_at||null,
   emailVerified:false,welcomeEmail:email?.status==='sent'?'sent':envEmailStatus(c.env),
-  signupDeposit:{...member.deposit,collectionEnabled:paymentConfig(c.env).liveDepositsEnabled},activated:member.activated,perks:member.perks,
+  signupDeposit:{...member.deposit,collectionEnabled:paymentConfig(c.env).liveDepositsEnabled},activated:member.activated,balances:member.balances,promotion:member.promotion,perks:member.perks,
   referral:{code:user.id,url:new URL('/r/'+user.id,c.env.APP_ORIGIN).href,...member.referral,rewardsEnabled:false}});
 });
 
@@ -146,8 +146,8 @@ app.post('/api/payments/quotes',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
  const {success}=await c.env.AUTH_LIMITER.limit({key:'payments:'+user.id});if(!success)return c.json({error:'Please wait before requesting another quote'},429);
  const body=await c.req.json().catch(()=>null);
- if(!['USDT','USDC'].includes(body?.symbol)||typeof body?.sender!=='string')return c.json({error:'Choose USDT or USDC and open MiniPay'},400);
- try{return c.json(await createQuote(c.env,user.id,body.symbol,body.sender),201)}catch(error){console.error('Quote unavailable',error instanceof Error?error.message:'error');return c.json({error:'Payment quote unavailable. Check payment setup or try again shortly.'},503)}
+ if(!['USDT','USDC'].includes(body?.symbol)||typeof body?.sender!=='string'||![100,200].includes(body?.amount))return c.json({error:'Choose USDT or USDC and open MiniPay'},400);
+ try{return c.json(await createQuote(c.env,user.id,body.symbol,body.sender,body.amount),201)}catch(error){console.error('Quote unavailable',error instanceof Error?error.message:'error');return c.json({error:'Payment quote unavailable. Check payment setup or try again shortly.'},503)}
 });
 app.post('/api/payments/quotes/:id/verify',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
@@ -155,6 +155,18 @@ app.post('/api/payments/quotes/:id/verify',async c=>{
  const q=await c.env.DB.prepare('SELECT * FROM payment_quotes WHERE id=? AND user_id=?').bind(c.req.param('id'),user.id).first<any>();if(!q)return c.json({error:'Quote not found'},404);
  const body=await c.req.json().catch(()=>null);if(!/^0x[a-fA-F0-9]{64}$/.test(body?.txHash||''))return c.json({error:'Invalid transaction hash'},400);
  return c.json(await verifyQuote(c.env,q,body.txHash.toLowerCase()));
+});
+app.get('/api/payments/wallet',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const config=paymentConfig(c.env);return c.json({memberId:user.id,network:config.mode==='production'?'Celo mainnet':'Celo Sepolia',chainId:config.chainId,address:config.ready?config.treasury:null,ready:config.ready,minimumDeposit:100,manualVerification:'review_required',cardCheckoutEnabled:false});
+});
+app.post('/api/payments/manual-claims',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const config=paymentConfig(c.env);if(!config.liveDepositsEnabled)return c.json({error:'Production collection is not configured'},503);
+ const {success}=await c.env.AUTH_LIMITER.limit({key:'claims:'+user.id});if(!success)return c.json({error:'Please wait before submitting another transfer'},429);
+ const body=await c.req.json().catch(()=>null);if(!['USDC','USDT'].includes(body?.asset)||!/^0x[a-fA-F0-9]{64}$/.test(body?.txHash||''))return c.json({error:'Provide a Celo transaction hash and token'},400);
+ await c.env.DB.prepare('INSERT OR IGNORE INTO manual_deposit_claims(id,user_id,chain_id,asset,tx_hash) VALUES(?,?,?,?,?)').bind(crypto.randomUUID(),user.id,42220,body.asset,body.txHash.toLowerCase()).run();
+ return c.json({status:'pending_review',notice:'A transfer hash alone does not establish ownership. Reconciliation and proof of the funding source are required before credit.'},202);
 });
 app.get('/api/investor/preferences',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
@@ -176,8 +188,12 @@ app.get('/api/investor/ledger',async c=>{
  const entries=await c.env.DB.prepare('SELECT id,entry_type,asset,amount_minor,source_ref,occurred_at FROM ledger_entries WHERE user_id=? ORDER BY occurred_at DESC LIMIT 100').bind(user.id).all<any>();
  const totals=await c.env.DB.prepare('SELECT COALESCE(SUM(amount_minor),0) AS balance_minor FROM ledger_entries WHERE user_id=?').bind(user.id).first<any>();
  const requests=await c.env.DB.prepare('SELECT id,asset,amount_minor,destination_network,status,requested_at FROM withdrawal_requests WHERE user_id=? ORDER BY requested_at DESC LIMIT 30').bind(user.id).all<any>();
- const balanceMinor=Number(totals?.balance_minor||0);
- return c.json({asOf:new Date().toISOString(),currency:'USDT',balanceUsdt:balanceMinor/1000000,entries:(entries.results||[]).map((x:any)=>({id:x.id,type:x.entry_type,amountUsdt:x.amount_minor/1000000,asset:x.asset,sourceRef:x.source_ref,at:x.occurred_at})),withdrawalRequests:(requests.results||[]).map((x:any)=>({id:x.id,amountUsdt:x.amount_minor/1000000,asset:x.asset,network:x.destination_network,status:x.status,requestedAt:x.requested_at})),depositsEnabled:false,withdrawalsEnabled:false,payoutsEnabled:false,valuationPolicy:'Verified ledger entries only; no automatic yield credits'});
+ const funding=await c.env.DB.prepare('SELECT * FROM funding_receipts WHERE user_id=? ORDER BY created_at DESC').bind(user.id).all<any>();
+ const usdt=Number(totals?.balance_minor||0)+funding.results.filter(x=>x.asset==='USDT').reduce((a,x)=>a+x.amount_minor-x.refunded_minor,0);
+ const usdc=funding.results.filter(x=>x.asset==='USDC').reduce((a,x)=>a+x.amount_minor-x.refunded_minor,0);
+ return c.json({asOf:new Date().toISOString(),currency:'STABLECOINS',balanceUsdt:usdt/1e6,balanceUsdc:usdc/1e6,
+  entries:[...(entries.results||[]).map((x:any)=>({id:x.id,type:x.entry_type,amountUsdt:x.amount_minor/1e6,asset:x.asset,at:x.occurred_at})),...funding.results.map(x=>({id:x.id,type:'verified_deposit',amountUsdt:(x.amount_minor-x.refunded_minor)/1e6,asset:x.asset,at:x.settled_at}))],
+  withdrawalRequests:requests.results,depositsEnabled:paymentConfig(c.env).liveDepositsEnabled,withdrawalsEnabled:false,payoutsEnabled:false,valuationPolicy:'Actual stablecoin units, recorded separately. CIV is a platform, not a token.'});
 });
 app.get('/api/investor/projection',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
@@ -353,7 +369,7 @@ app.get('/api/transparency',async c=>{
   return c.json({asOf:new Date().toISOString(),fundingEnabled:false,liveTradingEnabled:false,categories,verifiedPerformance:latest.results||[],announcements:announcements.results||[],notice:'No publication is proof of independent verification unless the source and verifier are provided. Historical performance does not guarantee future returns.'});
 });
 app.all('/api/funding/*',c=>c.json({error:'Funding and withdrawals are not enabled'},403));
-app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',release:'payment-quotes-v3',membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,fundingEnabled:false,liveTradingEnabled:false}));
+app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',release:'stablecoin-funding-v4',membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,fundingEnabled:false,liveTradingEnabled:false}));
 app.get('/api/ready',async c=>{
  // Preparing these queries validates required columns as well as table presence.
  await c.env.DB.batch([
@@ -366,9 +382,12 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT required_minor,settled_minor,active FROM member_activation LIMIT 0'),
   c.env.DB.prepare('SELECT payment_ref,refunded_minor,environment FROM signup_deposits LIMIT 0'),
   c.env.DB.prepare('SELECT metric,threshold,status FROM member_perks LIMIT 0'),
-  c.env.DB.prepare('SELECT token_minor,rate_micro_zar,expires_at,next_block FROM payment_quotes LIMIT 0')
+  c.env.DB.prepare('SELECT token_minor,funding_minor,purpose,expires_at FROM payment_quotes LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,asset,amount_minor,refunded_minor FROM funding_receipts LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,status FROM deposit_promotions LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,status FROM manual_deposit_claims LIMIT 0')
  ]);
- return c.json({ready:true,schema:10,membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:11,membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
