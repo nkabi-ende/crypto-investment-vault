@@ -3,8 +3,9 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deliverEmails } from './email';
 import { membership } from './membership';
+import { paymentConfig,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-type Bindings = { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
+type Bindings = PaymentEnv & { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
 const app = new Hono<{Bindings:Bindings}>();
 app.onError((error,c)=>{console.error('CIV request failed',c.req.path,error instanceof Error ? error.name : 'UnknownError');return c.json({error:'Account service temporarily unavailable. Please try again.'},503)});
 app.use('/api/*',bodyLimit({maxSize:16384,onError:c=>c.json({error:'Request too large'},413)}));
@@ -131,10 +132,30 @@ app.get('/api/investor/onboarding',async c=>{
  ]);
  return c.json({name:profile?.display_name||null,memberId:user.id,termsAcceptedAt:profile?.terms_accepted_at||null,
   emailVerified:false,welcomeEmail:email?.status==='sent'?'sent':envEmailStatus(c.env),
-  signupDeposit:member.deposit,activated:member.activated,perks:member.perks,
+  signupDeposit:{...member.deposit,collectionEnabled:paymentConfig(c.env).liveDepositsEnabled},activated:member.activated,perks:member.perks,
   referral:{code:user.id,url:new URL('/r/'+user.id,c.env.APP_ORIGIN).href,...member.referral,rewardsEnabled:false}});
 });
 
+app.get('/api/payments/config',c=>{const {rpc,treasury,...config}=paymentConfig(c.env);return c.json(config)});
+app.get('/api/payments/quotes',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const rows=await c.env.DB.prepare('SELECT * FROM payment_quotes WHERE user_id=? ORDER BY created_at DESC LIMIT 20').bind(user.id).all();
+ return c.json({quotes:rows.results.map(presentQuote)});
+});
+app.post('/api/payments/quotes',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const {success}=await c.env.AUTH_LIMITER.limit({key:'payments:'+user.id});if(!success)return c.json({error:'Please wait before requesting another quote'},429);
+ const body=await c.req.json().catch(()=>null);
+ if(!['USDT','USDC'].includes(body?.symbol)||typeof body?.sender!=='string')return c.json({error:'Choose USDT or USDC and open MiniPay'},400);
+ try{return c.json(await createQuote(c.env,user.id,body.symbol,body.sender),201)}catch(error){console.error('Quote unavailable',error instanceof Error?error.message:'error');return c.json({error:'Payment quote unavailable. Check payment setup or try again shortly.'},503)}
+});
+app.post('/api/payments/quotes/:id/verify',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ const {success}=await c.env.AUTH_LIMITER.limit({key:'verify:'+user.id});if(!success)return c.json({error:'Please wait before checking again'},429);
+ const q=await c.env.DB.prepare('SELECT * FROM payment_quotes WHERE id=? AND user_id=?').bind(c.req.param('id'),user.id).first<any>();if(!q)return c.json({error:'Quote not found'},404);
+ const body=await c.req.json().catch(()=>null);if(!/^0x[a-fA-F0-9]{64}$/.test(body?.txHash||''))return c.json({error:'Invalid transaction hash'},400);
+ return c.json(await verifyQuote(c.env,q,body.txHash.toLowerCase()));
+});
 app.get('/api/investor/preferences',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
  const selected=await c.env.DB.prepare('SELECT entry_tier_usd,payout_cycle,acknowledgement_at,updated_at FROM investor_preferences WHERE user_id=?').bind(user.id).first<any>();
@@ -332,7 +353,7 @@ app.get('/api/transparency',async c=>{
   return c.json({asOf:new Date().toISOString(),fundingEnabled:false,liveTradingEnabled:false,categories,verifiedPerformance:latest.results||[],announcements:announcements.results||[],notice:'No publication is proof of independent verification unless the source and verifier are provided. Historical performance does not guarantee future returns.'});
 });
 app.all('/api/funding/*',c=>c.json({error:'Funding and withdrawals are not enabled'},403));
-app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',release:'member-referrals-v2',fundingEnabled:false,liveTradingEnabled:false}));
+app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',release:'payment-quotes-v3',membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,fundingEnabled:false,liveTradingEnabled:false}));
 app.get('/api/ready',async c=>{
  // Preparing these queries validates required columns as well as table presence.
  await c.env.DB.batch([
@@ -344,9 +365,10 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT intent_id,amount_minor FROM celo_test_credits LIMIT 0'),
   c.env.DB.prepare('SELECT required_minor,settled_minor,active FROM member_activation LIMIT 0'),
   c.env.DB.prepare('SELECT payment_ref,refunded_minor,environment FROM signup_deposits LIMIT 0'),
-  c.env.DB.prepare('SELECT metric,threshold,status FROM member_perks LIMIT 0')
+  c.env.DB.prepare('SELECT metric,threshold,status FROM member_perks LIMIT 0'),
+  c.env.DB.prepare('SELECT token_minor,rate_micro_zar,expires_at,next_block FROM payment_quotes LIMIT 0')
  ]);
- return c.json({ready:true,schema:9,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:10,membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
@@ -373,6 +395,7 @@ app.get('/r/:code',async c=>{
 export default {fetch:app.fetch, scheduled(_event:ScheduledController,env:Bindings,ctx:ExecutionContext){
  ctx.waitUntil(reconcile(env).catch(()=>console.error('Testnet reconciliation unavailable')));
  ctx.waitUntil(deliverEmails(env));
+ ctx.waitUntil(reconcilePayments(env));
  ctx.waitUntil(env.DB.batch([
   env.DB.prepare('DELETE FROM sessions WHERE expires_at<?').bind(Date.now()),
   env.DB.prepare('DELETE FROM auth_attempts WHERE window_start<? AND locked_until<?').bind(Date.now()-86400000,Date.now())
