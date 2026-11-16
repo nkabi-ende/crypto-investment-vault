@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict';
 const origin=process.env.CIV_ORIGIN||'https://cryptoinvestmentvault.com';
 async function json(path){const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);return r.json()}
-const status=await json('/api/status');assert.equal(status.release,'payment-quotes-v3');assert.equal(status.fundingEnabled,false);assert.equal(status.liveTradingEnabled,false);
-const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,10);
+const status=await json('/api/status');assert.equal(status.release,'stablecoin-funding-v4');assert.equal(status.fundingEnabled,false);assert.equal(status.liveTradingEnabled,false);
+const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,11);
 for(const path of ['/join']){
  const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes('id="authForm"'));assert.ok(html.includes('og-invitation-v1.png'));assert.ok(html.includes(`property="og:url" content="${origin}${path}"`));
 }
@@ -14,4 +14,4 @@ for(const path of ['/api/me','/api/investor/onboarding','/api/investor/ledger'])
 }
 const payments=await json('/api/payments/config');assert.equal(payments.liveDepositsEnabled,payments.ready&&payments.mode==='production');if(payments.liveDepositsEnabled){assert.equal(payments.chainId,42220);assert.deepEqual(payments.supportedTokens,['USDT','USDC'])}
 const celo=await json('/api/celo/config');assert.equal(celo.liveDepositsEnabled,false);assert.equal(celo.livePayoutsEnabled,false);
-console.log('CIV production checks passed: schema 10, signup and referral HTML, PNG preview, private API boundaries, disabled live rails.');
+console.log('CIV production checks passed: schema 11, signup and referral HTML, PNG preview, private API boundaries, disabled live rails.');

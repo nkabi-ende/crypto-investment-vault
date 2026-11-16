@@ -13,16 +13,10 @@ export function paymentConfig(env:PaymentEnv){
  const rpc=production?env.CELO_MAINNET_RPC_URL:env.CELO_SEPOLIA_RPC_URL;
  const ready=env.PAYMENTS_ENABLED==='true'&&validWallet(treasury)&&!!rpc?.startsWith('https://');
  return {mode:production?'production':'testnet',chainId,ready,liveDepositsEnabled:production&&ready,
-  supportedTokens:production?['USDT','USDC']:['USDC'],quoteLifetimeSeconds:300,requiredZarMinor:50000,
+  supportedTokens:production?['USDT','USDC']:['USDC'],quoteLifetimeSeconds:300,minimumDeposit:100,depositPresets:[100,200],depositCurrency:'USDC_OR_USDT',platformToken:false,
   treasury:validWallet(treasury)?treasury.toLowerCase():null,rpc};
 }
 export function paymentData(q:any){return '0xa9059cbb'+q.treasury.slice(2).padStart(64,'0')+BigInt(q.token_minor).toString(16).padStart(64,'0')+q.id.replaceAll('-','')}
-export function quoteUnits(zarMinor:number,rateMicroZar:number){
- if(!Number.isSafeInteger(zarMinor)||zarMinor<1||!Number.isSafeInteger(rateMicroZar)||rateMicroZar<1)throw Error('Invalid quote rate');
- // ceil((ZAR cents / 100) / (micro-ZAR / 1e6) * 1e6). Never round the deposit down.
- const amount=(BigInt(zarMinor)*10000000000n+BigInt(rateMicroZar)-1n)/BigInt(rateMicroZar);
- if(amount>BigInt(Number.MAX_SAFE_INTEGER))throw Error('Quote amount unavailable');return Number(amount);
-}
 async function rpc(env:PaymentEnv,chain:number,method:string,params:any[]):Promise<any>{
  const url=chain===42220?env.CELO_MAINNET_RPC_URL:chain===11142220?env.CELO_SEPOLIA_RPC_URL:undefined;
  if(!url?.startsWith('https://'))throw Error('Payment RPC not configured');
@@ -30,32 +24,27 @@ async function rpc(env:PaymentEnv,chain:number,method:string,params:any[]):Promi
  if(!r.ok)throw Error('Payment RPC unavailable');const d:any=await r.json();if(d.error)throw Error('Payment RPC error');return d.result;
 }
 async function chainCheck(env:PaymentEnv,chain:number){if(Number(await rpc(env,chain,'eth_chainId',[]))!==chain)throw Error('Unexpected payment network')}
-export function presentQuote(q:any){return {id:q.id,chainId:q.chain_id,symbol:q.symbol,amount:q.token_minor/1e6,tokenMinor:String(q.token_minor),zarMinor:q.zar_minor,rateZar:q.rate_micro_zar/1e6,rateSource:q.rate_source,rateAt:q.rate_at,expiresAt:q.expires_at,status:q.status,txHash:q.tx_hash,reviewReason:q.review_reason,transaction:{to:q.token,data:paymentData(q),value:'0x0',feeCurrency:q.chain_id===42220?feeAdapters[q.symbol as keyof typeof feeAdapters]:'0x4822e58de6f5e485ef90df51c41ce01721331dc0'}}}
-export async function createQuote(env:PaymentEnv,userId:string,symbol:string,sender:string){
+export function presentQuote(q:any){return {id:q.id,chainId:q.chain_id,symbol:q.symbol,amount:q.token_minor/1e6,tokenMinor:String(q.token_minor),purpose:q.purpose,depositAmount:(q.funding_minor||0)/1e6,pricing:q.purpose==='funding'?'exact_token_units':'legacy_zar_quote',expiresAt:q.expires_at,status:q.status,txHash:q.tx_hash,reviewReason:q.review_reason,transaction:{to:q.token,data:paymentData(q),value:'0x0',feeCurrency:q.chain_id===42220?feeAdapters[q.symbol as keyof typeof feeAdapters]:'0x4822e58de6f5e485ef90df51c41ce01721331dc0'}}}
+export async function createQuote(env:PaymentEnv,userId:string,symbol:string,sender:string,amount=100){
  const config=paymentConfig(env);
  if(!config.ready)throw Error('Payment collection is awaiting configuration');
+ if(![100,200].includes(amount))throw Error('Select a 100 or 200 stablecoin deposit');
  if(!config.supportedTokens.includes(symbol)||!validWallet(sender)||sender.toLowerCase()===config.treasury)throw Error('Choose a supported token and paying wallet');
- const activation=await env.DB.prepare('SELECT required_minor,settled_minor FROM member_activation WHERE user_id=?').bind(userId).first<any>();
- if(!activation)throw Error('Membership record unavailable');
- const remaining=Math.max(0,activation.required_minor-activation.settled_minor);if(!remaining)throw Error('Membership deposit already settled');
+ const member=await env.DB.prepare('SELECT id FROM users WHERE id=?').bind(userId).first();if(!member)throw Error('Membership record unavailable');
  const now=Date.now();
  const pending=await env.DB.prepare("SELECT id FROM payment_quotes WHERE user_id=? AND chain_id=? AND status='submitted' LIMIT 1").bind(userId,config.chainId).first();if(pending)throw Error('A payment is awaiting verification');
- const existing=await env.DB.prepare("SELECT * FROM payment_quotes WHERE user_id=? AND chain_id=? AND symbol=? AND sender=? AND treasury=? AND expires_at>? AND status='awaiting_payment' ORDER BY created_at DESC LIMIT 1").bind(userId,config.chainId,symbol,sender.toLowerCase(),config.treasury,now+30000).first();if(existing)return presentQuote(existing);
+ const existing=await env.DB.prepare("SELECT * FROM payment_quotes WHERE user_id=? AND chain_id=? AND purpose='funding' AND funding_minor=? AND symbol=? AND sender=? AND treasury=? AND expires_at>? AND status='awaiting_payment' ORDER BY created_at DESC LIMIT 1").bind(userId,config.chainId,amount*1000000,symbol,sender.toLowerCase(),config.treasury,now+30000).first();if(existing)return presentQuote(existing);
  await chainCheck(env,config.chainId);
  const token=config.chainId===42220?tokens[symbol as keyof typeof tokens]:testUSDC;
  const decimals=await rpc(env,config.chainId,'eth_call',[{to:token,data:'0x313ce567'},'latest']);if(Number(decimals)!==6)throw Error('Unexpected token decimals');
- const coin=symbol==='USDT'?'tether':'usd-coin';
- const response=await fetch('https://api.coingecko.com/api/v3/simple/price?ids='+coin+'&vs_currencies=zar&include_last_updated_at=true',{headers:env.COINGECKO_DEMO_API_KEY?{'x-cg-demo-api-key':env.COINGECKO_DEMO_API_KEY}:{},signal:AbortSignal.timeout(10000)});
- if(!response.ok)throw Error('Exchange rate service unavailable');
- const data:any=await response.json(),price=data[coin]?.zar,at=data[coin]?.last_updated_at*1000;
- if(typeof price!=='number'||!Number.isFinite(price)||price<=0||!Number.isFinite(at)||at>now+30000||now-at>180000)throw Error('A fresh exchange rate is unavailable');
- const rate=Math.floor(price*1e6),amount=quoteUnits(remaining,rate),block=Number(await rpc(env,config.chainId,'eth_blockNumber',[]));
+ const block=Number(await rpc(env,config.chainId,'eth_blockNumber',[]));
  if(!Number.isSafeInteger(block)||block<1)throw Error('Payment network unavailable');
- const q={id:crypto.randomUUID(),chain_id:config.chainId,symbol,token,treasury:config.treasury,sender:sender.toLowerCase(),token_minor:amount,zar_minor:remaining,rate_micro_zar:rate,rate_source:'CoinGecko:'+coin+'/ZAR',rate_at:at,created_at:now,expires_at:now+300000,next_block:block,status:'awaiting_payment',tx_hash:null};
- await env.DB.prepare('INSERT INTO payment_quotes(id,user_id,chain_id,symbol,token,treasury,sender,token_minor,zar_minor,rate_micro_zar,rate_source,rate_at,created_at,expires_at,next_block,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(q.id,userId,q.chain_id,q.symbol,q.token,q.treasury,q.sender,q.token_minor,q.zar_minor,q.rate_micro_zar,q.rate_source,q.rate_at,now,q.expires_at,block,now).run();
- return presentQuote(q);
+ const q={id:crypto.randomUUID(),chain_id:config.chainId,symbol,token,treasury:config.treasury,sender:sender.toLowerCase(),token_minor:amount*1000000,zar_minor:1,rate_micro_zar:1,rate_source:'token_units',rate_at:now,created_at:now,expires_at:now+300000,next_block:block,status:'awaiting_payment',tx_hash:null};
+ await env.DB.prepare('INSERT INTO payment_quotes(id,user_id,chain_id,symbol,token,treasury,sender,token_minor,zar_minor,rate_micro_zar,rate_source,rate_at,created_at,expires_at,next_block,updated_at,purpose,funding_minor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(q.id,userId,q.chain_id,q.symbol,q.token,q.treasury,q.sender,q.token_minor,q.zar_minor,q.rate_micro_zar,q.rate_source,q.rate_at,now,q.expires_at,block,now,'funding',q.token_minor).run();
+ return presentQuote({...q,purpose:'funding',funding_minor:q.token_minor});
 }
 export async function verifyQuote(env:PaymentEnv,q:any,hash:string){
+ if(q.purpose!=='funding'||q.funding_minor!==q.token_minor||q.token_minor<100000000){await env.DB.prepare("UPDATE payment_quotes SET status='review',review_reason='legacy_quote_retired' WHERE id=? AND status NOT IN ('verified','verified_test')").bind(q.id).run();return {status:'review',reviewReason:'legacy_quote_retired'}}
  if(q.status==='verified'||q.status==='verified_test'||q.status==='review')return presentQuote(q);
  await chainCheck(env,q.chain_id);
  const tx=await rpc(env,q.chain_id,'eth_getTransactionByHash',[hash]);
@@ -77,9 +66,11 @@ export async function verifyQuote(env:PaymentEnv,q:any,hash:string){
  if(reason){await env.DB.prepare("UPDATE payment_quotes SET status='review',review_reason=?,updated_at=? WHERE id=? AND status='submitted'").bind(reason,Date.now(),q.id).run();return {status:'review',reviewReason:reason}}
  const writes=[env.DB.prepare("UPDATE payment_quotes SET status=?,verified_at=?,updated_at=? WHERE id=? AND tx_hash=? AND status='submitted'").bind(q.chain_id===42220?'verified':'verified_test',Date.now(),Date.now(),q.id,hash)];
  if(q.chain_id===42220){
-  writes.push(env.DB.prepare(`INSERT INTO signup_deposits(id,user_id,provider,payment_ref,currency,amount_minor,environment,settled_at)
-   SELECT id,user_id,'celo-mainnet',?,'ZAR',zar_minor,'production',? FROM payment_quotes WHERE id=? AND status='verified' AND tx_hash=? ON CONFLICT(provider,payment_ref) DO NOTHING`).bind(hash,new Date(paidAt).toISOString(),q.id,hash));
-  writes.push(env.DB.prepare("INSERT INTO audit_events(id,user_id,event_type,detail) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING").bind('deposit:'+q.id,q.user_id,'signup_deposit_verified',JSON.stringify({quoteId:q.id,chainId:q.chain_id,txHash:hash,zarMinor:q.zar_minor})));
+  writes.push(env.DB.prepare(`INSERT INTO funding_receipts(id,user_id,asset,amount_minor,chain_id,tx_hash,settled_at)
+   SELECT id,user_id,symbol,funding_minor,chain_id,?,? FROM payment_quotes WHERE id=? AND status='verified' AND purpose='funding' AND tx_hash=? ON CONFLICT(tx_hash) DO NOTHING`).bind(hash,new Date(paidAt).toISOString(),q.id,hash));
+  writes.push(env.DB.prepare(`INSERT OR IGNORE INTO deposit_promotions(user_id,qualifying_receipt) SELECT user_id,id FROM funding_receipts WHERE id=?`).bind(q.id));
+  writes.push(env.DB.prepare("INSERT INTO audit_events(id,user_id,event_type,detail) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING").bind('deposit:'+q.id,q.user_id,'funding_verified',JSON.stringify({quoteId:q.id,chainId:q.chain_id,txHash:hash,asset:q.symbol,amountMinor:q.token_minor})));
+
  }
  await env.DB.batch(writes);
  return {status:q.chain_id===42220?'verified':'verified_test'};

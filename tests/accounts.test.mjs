@@ -68,7 +68,7 @@ test('invalid attribution is ignored, expired sessions fail and members get a st
  await db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').bind(made.data.user.id).run();assert.equal((await call('/api/me',{cookie:made.cookie})).r.status,401);
 });
 test('readiness validates required schema, and payment rails remain correctly disabled',async()=>{
- const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,10);
+ const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,11);
  assert.equal((await call('/api/celo/config')).data.ready,false);
  const made=await call('/api/auth/register',{method:'POST',body:payload('payment@example.com')});
  assert.equal((await call('/api/celo/testnet/intents',{method:'POST',cookie:made.cookie,body:{amountUsd:100,sender:'0x'+'1'.repeat(40)}})).r.status,503);
@@ -78,7 +78,7 @@ test('readiness validates required schema, and payment rails remain correctly di
 
 test('invitation HTML has server-rendered OpenGraph metadata and invalid links do not load signup',async()=>{
  const made=await call('/api/auth/register',{method:'POST',body:payload('social-member@example.com')});
- const response=await mf.dispatchFetch(origin+'/r/'+made.data.user.id);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('property="og:url" content="'+origin+'/r/'+made.data.user.id+'"'));assert.match(html,/og-invitation-v1.png/);assert.match(html,/id="authForm"/);assert.match(html,/R500 signup deposit/);assert.doesNotMatch(html,/kzn-ai|KZN AI Solutions/i);
+ const response=await mf.dispatchFetch(origin+'/r/'+made.data.user.id);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('property="og:url" content="'+origin+'/r/'+made.data.user.id+'"'));assert.match(html,/og-invitation-v1.png/);assert.match(html,/id="authForm"/);assert.match(html,/Minimum deposit: 100 USDC or USDT/);assert.doesNotMatch(html,/kzn-ai|KZN AI Solutions/i);
  const retired=await mf.dispatchFetch(origin+'/r/kzn-ai');assert.equal(retired.status,404);await retired.text();
  const bad=await mf.dispatchFetch(origin+'/r/unknown-invitation');assert.equal(bad.status,404);await bad.text();
  const dashboard=await mf.dispatchFetch(origin+'/dashboard');assert.match(await dashboard.text(),/noindex,nofollow/);
@@ -119,27 +119,6 @@ test('migration removes campaign attribution, preserves member history and redir
  await assert.rejects(db.prepare("INSERT INTO referral_attributions(user_id,code) VALUES('00000000-0000-4000-8000-000000000001','00000000000040008000000000000001')").run());
  await assert.rejects(db.prepare("UPDATE referral_attributions SET code=code").run());
 });
-test('R500 activation counts settled production ZAR only, handles refunds and unlocks published perks',async()=>{
- const inviter=await call('/api/auth/register',{method:'POST',body:payload('activation-owner@example.com')});
- const invitee=await call('/api/auth/register',{method:'POST',body:payload('activation-member@example.com',inviter.data.user.id)});
- assert.equal(invitee.data.referral.code,invitee.data.user.id);assert.equal(invitee.data.signupDeposit.requiredMinor,50000);
- async function onboard(account){return (await call('/api/investor/onboarding',{cookie:account.cookie})).data}
- let state=await onboard(inviter);assert.equal(state.signupDeposit.requiredMinor,50000);assert.equal(state.signupDeposit.remainingMinor,50000);assert.equal(state.signupDeposit.collectionEnabled,false);assert.equal(state.activated,false);assert.deepEqual(state.perks,[]);assert.equal(state.referral.pending,1);
- const settle=(account,ref,amount,environment='production')=>db.prepare("INSERT INTO signup_deposits(id,user_id,provider,payment_ref,currency,amount_minor,environment,settled_at) VALUES(?,?,?,?,?,?,?,?)").bind(crypto.randomUUID(),account.data.user.id,'test-fixture',ref,'ZAR',amount,environment,new Date().toISOString()).run();
- await assert.rejects(settle(invitee,'testnet',50000,'testnet'));
- await assert.rejects(db.prepare("INSERT INTO signup_deposits(id,user_id,provider,payment_ref,currency,amount_minor,environment,settled_at) VALUES('fake',?,'fixture','fake-usd','USDC',50000,'production','now')").bind(invitee.data.user.id).run());
- for(const path of ['/api/investor/onboarding','/api/investor/deposit/confirm','/api/funding/signup-deposit']){const r=await call(path,{method:'POST',cookie:invitee.cookie,body:{paid:true,amountMinor:50000}});assert.ok([403,404].includes(r.r.status))}
- await settle(invitee,'partial',20000);state=await onboard(invitee);assert.equal(state.signupDeposit.status,'partially_paid');assert.equal(state.signupDeposit.remainingMinor,30000);assert.equal((await onboard(inviter)).referral.qualified,0);
- await settle(invitee,'remaining',30000);await assert.rejects(settle(inviter,'remaining',30000));
- state=await onboard(inviter);assert.equal(state.referral.qualified,1);assert.equal(state.referral.pending,0);assert.equal((await onboard(invitee)).activated,true);assert.ok(!JSON.stringify(state).includes('activation-member@example.com'));
- await db.prepare("INSERT INTO member_perks(id,title,description,metric,threshold,status) VALUES('test-referral','Member feature','Fixture perk','qualified_referrals',1,'published'),('test-community','Community feature','Fixture community perk','activated_members',1,'published'),('draft-perk','Hidden feature','Not published','qualified_referrals',1,'draft')").run();
- state=await onboard(inviter);assert.equal(state.perks.length,2);assert.ok(state.perks.every(p=>p.status==='locked'));
- await settle(inviter,'owner',50000);state=await onboard(inviter);assert.ok(state.perks.every(p=>p.status==='unlocked'));
- await db.prepare("UPDATE signup_deposits SET refunded_minor=1 WHERE payment_ref='remaining'").run();state=await onboard(inviter);assert.equal(state.referral.qualified,0);assert.equal(state.perks.find(p=>p.id==='test-referral').status,'locked');assert.equal((await onboard(invitee)).signupDeposit.remainingMinor,1);
- const ledger=await call('/api/investor/ledger',{cookie:inviter.cookie});assert.equal(ledger.data.balanceUsdt,0);
- await db.prepare("DELETE FROM member_perks WHERE id IN ('test-referral','test-community','draft-perk')").run();
-});
-
 test('browser invitation capture rejects campaign tags, expires old links and works without local storage',async()=>{
  const {Script,runInNewContext}=await import('node:vm');
  const html=await readFile('public/index.html','utf8');
@@ -155,56 +134,48 @@ test('browser invitation capture rejects campaign tags, expires old links and wo
  assert.equal(evaluate('/join','?ref='+id),id);
 });
 
-test('expiring payment quotes verify exact finalized transfers and credit R500 only on mainnet',async()=>{
+test('stablecoin deposits activate membership, preserve token balances and isolate R500 promotion',async()=>{
  const built=await build({entryPoints:['src/payments.ts'],bundle:true,write:false,format:'esm',platform:'node'});
  const p=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
- const sender='0x'+'1'.repeat(40),treasury='0x'+'2'.repeat(40),hash='0x'+'a'.repeat(64),blockHash='0x'+'b'.repeat(64);
+ const sender='0x'+'1'.repeat(40),treasury='0x'+'2'.repeat(40),blockHash='0x'+'b'.repeat(64);
  const env={DB:db,PAYMENTS_ENABLED:'true',PAYMENT_MODE:'production',CELO_MAINNET_RPC_URL:'https://rpc.example',CELO_MAINNET_TREASURY_ADDRESS:treasury,CELO_SEPOLIA_RPC_URL:'https://test-rpc.example',CELO_TEST_TREASURY_ADDRESS:treasury};
- assert.equal(p.paymentConfig({...env,PAYMENTS_ENABLED:'false'}).ready,false);assert.equal(p.paymentConfig({...env,CELO_MAINNET_TREASURY_ADDRESS:'0x'+'0'.repeat(40)}).ready,false);
- assert.equal(p.quoteUnits(50000,18000000),27777778);assert.throws(()=>p.quoteUnits(50000,0));
- const owner=await call('/api/auth/register',{method:'POST',body:payload('quote-owner@example.com')});
- const other=await call('/api/auth/register',{method:'POST',body:payload('quote-other@example.com')});
- let ownerQuoteId,quote,stale=false,chain=42220,final=100,late=false,wrongLog=false;
+ assert.equal(p.paymentConfig({...env,PAYMENTS_ENABLED:'false'}).ready,false);assert.equal(p.paymentConfig({...env,CELO_MAINNET_TREASURY_ADDRESS:'0x'+'0'.repeat(40)}).ready,false);assert.deepEqual(p.paymentConfig(env).depositPresets,[100,200]);assert.equal(p.paymentConfig(env).platformToken,false);
+ const owner=await call('/api/auth/register',{method:'POST',body:payload('funding-owner@example.com')});
+ const other=await call('/api/auth/register',{method:'POST',body:payload('funding-other@example.com',owner.data.user.id)});
+ let q,hash='0x'+'a'.repeat(64),chain=42220,final=100,late=false,wrongAmount=false;
  const realFetch=globalThis.fetch;
  globalThis.fetch=async(url,options)=>{
-  if(String(url).startsWith('https://api.coingecko.com/'))return Response.json({tether:{zar:18,last_updated_at:Math.floor(Date.now()/1000)-(stale?1000:0)},'usd-coin':{zar:18,last_updated_at:Math.floor(Date.now()/1000)}});
+  assert.ok(!String(url).includes('coingecko'),'Token-unit deposits do not depend on an FX provider');
   const {method}=JSON.parse(options.body);let result;
   if(method==='eth_chainId')result='0x'+chain.toString(16);
   else if(method==='eth_call')result='0x6';
   else if(method==='eth_blockNumber')result='0x64';
-  else if(method==='eth_getTransactionByHash')result={hash,from:sender,to:quote.token,input:p.paymentData(quote),value:'0x0'};
-  else if(method==='eth_getTransactionReceipt')result={status:'0x1',blockNumber:'0x64',blockHash,logs:[{address:quote.token,topics:['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef','0x'+sender.slice(2).padStart(64,'0'),'0x'+treasury.slice(2).padStart(64,'0')],data:'0x'+BigInt(quote.token_minor+(wrongLog?1:0)).toString(16)}]};
-  else if(method==='eth_getBlockByNumber')result=JSON.parse(options.body).params[0]==='finalized'?{number:'0x'+final.toString(16)}:{hash:blockHash,timestamp:'0x'+Math.floor((late?quote.expires_at+60000:quote.created_at+1000)/1000).toString(16)};
-  else if(method==='eth_getLogs')result=[{transactionHash:hash}];
-  else throw Error(method);
+  else if(method==='eth_getTransactionByHash')result={hash,from:sender,to:q.token,input:p.paymentData(q),value:'0x0'};
+  else if(method==='eth_getTransactionReceipt')result={status:'0x1',blockNumber:'0x64',blockHash,logs:[{address:q.token,topics:['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef','0x'+sender.slice(2).padStart(64,'0'),'0x'+treasury.slice(2).padStart(64,'0')],data:'0x'+BigInt(q.token_minor+(wrongAmount?1:0)).toString(16)}]};
+  else if(method==='eth_getBlockByNumber')result=JSON.parse(options.body).params[0]==='finalized'?{number:'0x'+final.toString(16)}:{hash:blockHash,timestamp:'0x'+Math.floor((late?q.expires_at+60000:q.created_at+1000)/1000).toString(16)};
+  else if(method==='eth_getLogs')result=[{transactionHash:hash}];else throw Error(method);
   return Response.json({jsonrpc:'2.0',id:1,result});
  };
+ const stored=async quote=>db.prepare('SELECT * FROM payment_quotes WHERE id=?').bind(quote.id).first();
+ const onboard=async account=>(await call('/api/investor/onboarding',{cookie:account.cookie})).data;
  try{
-  const first=await p.createQuote(env,owner.data.user.id,'USDT',sender);ownerQuoteId=first.id;assert.equal(first.zarMinor,50000);assert.equal(first.tokenMinor,'27777778');assert.equal(first.expiresAt-(await db.prepare('SELECT created_at FROM payment_quotes WHERE id=?').bind(first.id).first()).created_at,300000);
-  assert.equal((await p.createQuote(env,owner.data.user.id,'USDT',sender)).id,first.id);
-  quote=await db.prepare('SELECT * FROM payment_quotes WHERE id=?').bind(first.id).first();
-  final=99;assert.equal((await p.verifyQuote(env,quote,hash)).status,'pending');await assert.rejects(p.createQuote(env,owner.data.user.id,'USDC',sender),/awaiting verification/);assert.equal((await call('/api/investor/onboarding',{cookie:owner.cookie})).data.activated,false);
-  final=100;assert.equal((await p.verifyQuote(env,quote,hash)).status,'verified');assert.equal((await call('/api/investor/onboarding',{cookie:owner.cookie})).data.activated,true);
-  assert.equal((await p.verifyQuote(env,quote,hash)).status,'verified');assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM signup_deposits WHERE user_id=?").bind(owner.data.user.id).first()).n,1);
-  await assert.rejects(p.createQuote(env,owner.data.user.id,'USDC',sender));
-  const second=await p.createQuote(env,other.data.user.id,'USDC',sender);const otherQuote=await db.prepare('SELECT * FROM payment_quotes WHERE id=?').bind(second.id).first();assert.equal((await p.verifyQuote(env,otherQuote,hash)).status,'mismatch');
+  for(const amount of [0,50,99,101,500,'100'])await assert.rejects(p.createQuote(env,owner.data.user.id,'USDT',sender,amount));
+  const first=await p.createQuote(env,owner.data.user.id,'USDT',sender,100);assert.equal(first.tokenMinor,'100000000');assert.equal(first.purpose,'funding');assert.equal(first.amount,100);q=await stored(first);assert.equal(q.expires_at-q.created_at,300000);assert.equal((await p.createQuote(env,owner.data.user.id,'USDT',sender,100)).id,first.id);
+  final=99;assert.equal((await p.verifyQuote(env,q,hash)).status,'pending');assert.equal((await onboard(owner)).activated,false);await assert.rejects(p.createQuote(env,owner.data.user.id,'USDC',sender,200),/awaiting verification/);
+  final=100;assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');let state=await onboard(owner);assert.equal(state.activated,true);assert.deepEqual(state.balances,[{asset:'USDT',amountMinor:100000000}]);assert.equal(state.promotion.amountMinor,50000);assert.equal(state.promotion.status,'pending_terms');assert.equal(state.promotion.withdrawable,false);
+  const second=await p.createQuote(env,other.data.user.id,'USDC',sender,200);const secondQ=await stored(second);assert.equal((await p.verifyQuote(env,secondQ,hash)).status,'mismatch');
   assert.equal((await call('/api/payments/quotes/'+first.id+'/verify',{method:'POST',cookie:other.cookie,body:{txHash:hash}})).r.status,404);
-  late=true;quote=otherQuote;
-  // Use a different chain transaction hash so the global replay constraint does not mask expiry checks.
-  const secondHash='0x'+'c'.repeat(64);const fetchWithFirstHash=globalThis.fetch;
-  globalThis.fetch=async(url,options)=>{const r=await fetchWithFirstHash(url,options);const d=await r.json();if(d.result?.hash===hash)d.result.hash=secondHash;return Response.json(d)};
-  assert.equal((await p.verifyQuote(env,quote,secondHash)).status,'review');assert.equal((await call('/api/investor/onboarding',{cookie:other.cookie})).data.activated,false);
-  globalThis.fetch=fetchWithFirstHash;late=false;chain=11142220;
-  const test=await p.createQuote({...env,PAYMENT_MODE:'testnet'},other.data.user.id,'USDC',sender);quote=await db.prepare('SELECT * FROM payment_quotes WHERE id=?').bind(test.id).first();assert.equal((await p.verifyQuote(env,quote,hash)).status,'verified_test');assert.equal((await call('/api/investor/onboarding',{cookie:other.cookie})).data.activated,false);
-  chain=42220;stale=true;await assert.rejects(p.createQuote(env,other.data.user.id,'USDT',sender),/fresh exchange rate/);
-  stale=false;chain=1;await assert.rejects(p.createQuote(env,other.data.user.id,'USDT',sender),/Unexpected payment network/);
-  chain=42220;const recovery=await p.createQuote(env,other.data.user.id,'USDT',sender);quote=await db.prepare('SELECT * FROM payment_quotes WHERE id=?').bind(recovery.id).first();
-  globalThis.fetch=async(url,options)=>{const r=await fetchWithFirstHash(url,options);const d=await r.json();if(d.result?.hash===hash)d.result.hash='0x'+'d'.repeat(64);if(Array.isArray(d.result))for(const item of d.result)if(item.transactionHash===hash)item.transactionHash='0x'+'d'.repeat(64);return Response.json(d)};
-  await p.reconcilePayments(env);assert.equal((await db.prepare('SELECT status FROM payment_quotes WHERE id=?').bind(recovery.id).first()).status,'verified');assert.equal((await call('/api/investor/onboarding',{cookie:other.cookie})).data.activated,true);
-  const badAccount=await call('/api/auth/register',{method:'POST',body:payload('wrong-amount@example.com')});const bad=await p.createQuote(env,badAccount.data.user.id,'USDT',sender);quote=await db.prepare('SELECT * FROM payment_quotes WHERE id=?').bind(bad.id).first();wrongLog=true;
-  globalThis.fetch=async(url,options)=>{const r=await fetchWithFirstHash(url,options);const d=await r.json();if(d.result?.hash===hash)d.result.hash='0x'+'e'.repeat(64);return Response.json(d)};
-  assert.equal((await p.verifyQuote(env,quote,'0x'+'e'.repeat(64))).status,'review');assert.equal((await call('/api/investor/onboarding',{cookie:badAccount.cookie})).data.activated,false);
+  q=secondQ;hash='0x'+'c'.repeat(64);late=true;assert.equal((await p.verifyQuote(env,q,hash)).status,'review');assert.equal((await onboard(other)).activated,false);late=false;
+  chain=11142220;const test=await p.createQuote({...env,PAYMENT_MODE:'testnet'},other.data.user.id,'USDC',sender,100);q=await stored(test);assert.equal((await p.verifyQuote(env,q,hash)).status,'verified_test');assert.equal((await onboard(other)).activated,false);
+  chain=42220;hash='0x'+'d'.repeat(64);const recovery=await p.createQuote(env,other.data.user.id,'USDT',sender,100);q=await stored(recovery);await p.reconcilePayments(env);assert.equal((await stored(recovery)).status,'verified');assert.equal((await onboard(other)).activated,true);assert.equal((await onboard(owner)).referral.qualified,1);
+  hash='0x'+'e'.repeat(64);const repeat=await p.createQuote(env,owner.data.user.id,'USDC',sender,200);q=await stored(repeat);assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');state=await onboard(owner);assert.equal(state.balances.find(b=>b.asset==='USDT').amountMinor,100000000);assert.equal(state.balances.find(b=>b.asset==='USDC').amountMinor,200000000);assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM deposit_promotions WHERE user_id=?').bind(owner.data.user.id).first()).n,1);
+  const ledger=(await call('/api/investor/ledger',{cookie:owner.cookie})).data;assert.equal(ledger.balanceUsdc,200);assert.equal(ledger.balanceUsdt,100);
+  hash='0x'+'f'.repeat(64);q=await stored(await p.createQuote(env,other.data.user.id,'USDC',sender,100));wrongAmount=true;assert.equal((await p.verifyQuote(env,q,hash)).status,'review');wrongAmount=false;
+  await db.prepare('UPDATE funding_receipts SET refunded_minor=amount_minor WHERE user_id=?').bind(owner.data.user.id).run();state=await onboard(owner);assert.equal(state.activated,false);assert.equal(state.promotion.status,'ineligible');
+  await assert.rejects(db.prepare('UPDATE funding_receipts SET user_id=? WHERE id=?').bind(other.data.user.id,first.id).run());
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM signup_deposits').first()).n,0,'No new ZAR activation payments');
+  const privateHistory=(await call('/api/payments/quotes',{cookie:other.cookie})).data.quotes;assert.ok(!privateHistory.some(x=>x.id===first.id));
+  assert.equal((await call('/api/payments/wallet')).r.status,401);assert.equal((await call('/api/payments/quotes')).r.status,401);
+  assert.equal((await call('/api/payments/manual-claims',{method:'POST',cookie:owner.cookie,body:{asset:'USDC',txHash:hash}})).r.status,503);
  }finally{globalThis.fetch=realFetch}
- assert.equal((await call('/api/payments/quotes')).r.status,401);
- const rows=(await call('/api/payments/quotes',{cookie:other.cookie})).data.quotes;assert.ok(rows.every(q=>q.id!==ownerQuoteId));
 });
