@@ -68,7 +68,7 @@ test('invalid attribution is ignored, expired sessions fail and members get a st
  await db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').bind(made.data.user.id).run();assert.equal((await call('/api/me',{cookie:made.cookie})).r.status,401);
 });
 test('readiness validates required schema, and payment rails remain correctly disabled',async()=>{
- const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,12);
+ const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,13);
  assert.equal((await call('/api/celo/config')).data.ready,false);
  const made=await call('/api/auth/register',{method:'POST',body:payload('payment@example.com')});
  assert.equal((await call('/api/celo/testnet/intents',{method:'POST',cookie:made.cookie,body:{amountUsd:100,sender:'0x'+'1'.repeat(40)}})).r.status,503);
@@ -202,4 +202,33 @@ test('stablecoin deposits activate membership, preserve token balances and isola
   assert.equal((await call('/api/payments/wallet')).r.status,401);assert.equal((await call('/api/payments/quotes')).r.status,401);
   assert.equal((await call('/api/payments/manual-claims',{method:'POST',cookie:owner.cookie,body:{asset:'USDC',txHash:hash}})).r.status,503);
  }finally{globalThis.fetch=realFetch}
+});
+
+test('Big 7 market data uses one verified provider response, D1 cache and rate-limit fallback',async()=>{
+ const initial=await call('/api/markets');
+ assert.equal(initial.r.status,503);assert.equal(initial.data.code,'PROVIDER_NOT_CONFIGURED');
+ const built=await build({entryPoints:['src/market-prices.ts'],bundle:true,write:false,format:'esm',platform:'node'});
+ const prices=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
+ const env={DB:db,COINGECKO_DEMO_API_KEY:'test-only-key'};
+ let calls=0;
+ const prior=globalThis.fetch;
+ globalThis.fetch=async(url,options)=>{
+  calls++;assert.equal(new URL(url).hostname,'api.coingecko.com');assert.equal(options.headers['x-cg-demo-api-key'],'test-only-key');
+  return Response.json(['bitcoin','ethereum','solana','ripple','binancecoin','cardano','dogecoin'].map((id,i)=>({id,current_price:i===0?100000.25:i===5?0.714:i+0.5,price_change_percentage_24h:1.25})));
+ };
+ try{
+  const first=await prices.marketPrices(env);assert.equal(first.status,200);
+  const body=await first.json();assert.equal(body.stale,false);assert.equal(body.assets.length,7);
+  assert.equal(body.assets[0].symbol,'BTC');assert.equal(body.assets[0].priceUsd,100000.25);
+  assert.equal(body.assets[5].priceUsd,0.714);
+  const cached=await prices.marketPrices(env);assert.equal(cached.status,200);
+  assert.equal(calls,1,'Shared D1 snapshot should prevent unnecessary provider requests');
+  await db.prepare('UPDATE market_data_cache SET updated_at_ms=?,lease_until_ms=0,next_attempt_ms=0 WHERE cache_key=?').bind(Date.now()-11*60_000,'big7-usd-v1').run();
+  globalThis.fetch=async()=>{calls++;return Response.json({error:'rate limit'},{status:429})};
+  const fallback=await prices.marketPrices(env);assert.equal(fallback.status,200);
+  const old=await fallback.json();assert.equal(old.stale,true);assert.equal(old.assets[0].priceUsd,100000.25);
+  await prices.marketPrices(env);assert.equal(calls,2,'Provider cooldown should suppress repeated requests');
+  const row=await db.prepare('SELECT updated_at_ms,response_json FROM market_data_cache WHERE cache_key=?').bind('big7-usd-v1').first();
+  assert.ok(row.response_json.includes('100000.25'));
+ }finally{globalThis.fetch=prior}
 });

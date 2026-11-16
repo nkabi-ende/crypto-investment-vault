@@ -4,6 +4,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { deliverEmails } from './email';
 import { membership } from './membership';
 import { marketPulse,cryptoHeadlines } from './market-intelligence';
+import { marketPrices } from './market-prices';
 import { paymentConfig,pilotAllowed,mainnetPreflight,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 type Bindings = PaymentEnv & { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
@@ -341,52 +342,10 @@ app.get('/api/celo/testnet/intents',async c=>{
  return c.json({testUsdcMinor:balance?.total??0,mode:'testnet_only',intents:(rows.results||[]).map((x:any)=>({id:x.id,amountTestUsdc:x.amount_minor/1000000,status:x.status,txHash:x.tx_hash,createdAt:x.created_at,verifiedAt:x.verified_at})),liveBalanceCredits:false});
 });
 app.get('/api/celo/payout-signer/status',c=>c.json({mode:'disabled',mainnetSigningEnabled:false,testnetSigningEnabled:false,reason:'Signer must be isolated in a separate, authenticated treasury service with dual approval and hardware-backed keys. No signing key is stored in the public web worker.'}));
-const coinMap=[['bitcoin','BTC','Bitcoin'],['ethereum','ETH','Ethereum'],['solana','SOL','Solana'],['ripple','XRP','XRP'],['binancecoin','BNB','BNB'],['cardano','ADA','Cardano'],['dogecoin','DOGE','Dogecoin']] as const;
-// Server-side market summaries are independent of the payment and investment ledgers.
+// Market-reference APIs never read or write the financial ledger.
 app.get('/api/market-pulse',c=>marketPulse(c.env,c.req.raw,c.executionCtx));
 app.get('/api/headlines',c=>cryptoHeadlines(c.env,c.req.raw,c.executionCtx));
-app.get('/api/markets',async c=>{
-  const key=c.env.COINGECKO_DEMO_API_KEY;
-  if(!key)return c.json({error:'CoinGecko market data is not configured',code:'PROVIDER_NOT_CONFIGURED'},503);
-  const cache=caches.default;
-  const cacheKey=new Request(new URL('/api/markets',c.req.url).toString(),{method:'GET'});
-  const cached=await cache.match(cacheKey);
-  if(cached)return new Response(cached.body,cached);
-  try{
-    const url=new URL('https://api.coingecko.com/api/v3/coins/markets');
-    url.searchParams.set('vs_currency','usd');
-    url.searchParams.set('ids',coinMap.map(x=>x[0]).join(','));
-    url.searchParams.set('order','market_cap_desc');
-    url.searchParams.set('per_page','7');
-    url.searchParams.set('page','1');
-    url.searchParams.set('sparkline','false');
-    url.searchParams.set('price_change_percentage','24h');
-    const controller=new AbortController();
-    const timeout=setTimeout(()=>controller.abort(),8000);
-    let response:Response;
-    try{response=await fetch(url.toString(),{headers:{'accept':'application/json','x-cg-demo-api-key':key},signal:controller.signal})}finally{clearTimeout(timeout)}
-    if(!response.ok)throw new Error('CoinGecko returned '+response.status);
-    const raw:any=await response.json();
-    if(!Array.isArray(raw))throw new Error('Unexpected CoinGecko response');
-    const byId=new Map(raw.map((item:any)=>[item.id,item]));
-    const assets=coinMap.map(([id,symbol,name])=>{
-      const item:any=byId.get(id);
-      const price=Number(item?.current_price);
-      const change=item?.price_change_percentage_24h;
-      if(!item||!Number.isFinite(price)||price<=0)throw new Error('Incomplete market response: '+symbol);
-      const pct=change===null||change===undefined?null:Number(change);
-      return {symbol,name,priceUsd:price,change24h:pct!==null&&Number.isFinite(pct)?pct:null};
-    });
-    const asOf=new Date().toISOString();
-    const payload=JSON.stringify({source:'CoinGecko',asOf,assets,quoteCurrency:'USD',refreshSeconds:300});
-    const result=new Response(payload,{headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'public, max-age=300','X-Content-Type-Options':'nosniff'}});
-    c.executionCtx.waitUntil(cache.put(cacheKey,result.clone()));
-    return new Response(payload,{headers:result.headers});
-  }catch(e){
-    console.error('CoinGecko market request failed',e instanceof Error?e.message:'Unknown error');
-    return c.json({error:'Live market data temporarily unavailable',code:'MARKET_DATA_UNAVAILABLE'},503);
-  }
-});
+app.get('/api/markets',c=>marketPrices(c.env));
 const disclosureCategories=['performance','custody','legal','fees','risk','team','withdrawals'] as const;
 app.get('/api/transparency',async c=>{
   const disclosures=await c.env.DB.prepare("SELECT category,title,summary,status,evidence_url,verified_by,verified_at,published_at,updated_at FROM disclosures WHERE status IN ('published','verified') ORDER BY category,updated_at DESC").all();
@@ -414,9 +373,10 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT user_id,status FROM deposit_promotions LIMIT 0'),
   c.env.DB.prepare('SELECT code,user_id FROM referral_aliases LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,status FROM referral_wallet LIMIT 0'),
-  c.env.DB.prepare('SELECT user_id,status FROM manual_deposit_claims LIMIT 0')
+  c.env.DB.prepare('SELECT user_id,status FROM manual_deposit_claims LIMIT 0'),
+  c.env.DB.prepare('SELECT cache_key,response_json,updated_at_ms FROM market_data_cache LIMIT 0')
  ]);
- return c.json({ready:true,schema:12,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:13,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
