@@ -2,6 +2,7 @@ import { pbkdf2Sync } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deliverEmails } from './email';
+import { membership } from './membership';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 type Bindings = { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
 const app = new Hono<{Bindings:Bindings}>();
@@ -47,7 +48,7 @@ app.use('/api/auth/*',async(c,next)=>{
  await next();
 });
 const emailPattern=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const referralPattern=/^[a-z0-9_-]{3,64}$/;
+const referralPattern=/^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
 const termsVersion='2026-11-16';
 app.post('/api/auth/register',async c=>{
  const body=await c.req.json().catch(()=>null);
@@ -61,15 +62,16 @@ app.post('/api/auth/register',async c=>{
  if(body.acceptTerms!==true)return c.json({error:'Accept the Terms, Privacy Notice and Risk Disclosure to continue'},400);
  let attributedCode:string|null=null;
  if(referralPattern.test(referral)) {
-  const record=await c.env.DB.prepare('SELECT code FROM referral_codes WHERE code=?').bind(referral).first<{code:string}>();
+  const record=await c.env.DB.prepare('SELECT code FROM referral_codes WHERE (code=? OR user_id=?) AND user_id IS NOT NULL').bind(referral,referral).first<{code:string}>();
   attributedCode=record?.code||null;
  }
  const id=crypto.randomUUID(),salt='v2:'+rand(16),hash=await passwordHash(password,salt);
  const writes=[
   c.env.DB.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,email,hash,salt),
   c.env.DB.prepare('INSERT INTO portfolios(user_id) VALUES(?)').bind(id),
+  c.env.DB.prepare('INSERT OR IGNORE INTO signup_deposit_requirements(user_id) VALUES(?)').bind(id),
   c.env.DB.prepare('INSERT INTO account_profiles(user_id,display_name,terms_version) VALUES(?,?,?)').bind(id,name,termsVersion),
-  c.env.DB.prepare('INSERT INTO referral_codes(code,user_id) VALUES(?,?)').bind(id.replaceAll('-',''),id),
+  c.env.DB.prepare('INSERT INTO referral_codes(code,user_id) VALUES(?,?)').bind(id,id),
   c.env.DB.prepare('INSERT INTO email_outbox(id,user_id,event_type,available_at) VALUES(?,?,?,?)').bind(crypto.randomUUID(),id,'account.welcome.v1',Date.now()),
   c.env.DB.prepare('INSERT INTO audit_events(id,user_id,event_type) VALUES(?,?,?)').bind(crypto.randomUUID(),id,'registered')
  ];
@@ -78,7 +80,7 @@ app.post('/api/auth/register',async c=>{
   if(String(error).includes('UNIQUE constraint failed: users.email'))return c.json({error:'Unable to create account. Try signing in or use another email.'},409);
   throw error;
  }
- return c.json({user:{id,email,name},welcomeEmail:envEmailStatus(c.env)},201);
+ return c.json({user:{id,email,name},referral:{code:id,url:new URL('/r/'+id,c.env.APP_ORIGIN).href},signupDeposit:{currency:'ZAR',requiredMinor:50000,status:'awaiting_payment',collectionEnabled:false},welcomeEmail:envEmailStatus(c.env)},201);
 });
 function envEmailStatus(env:Bindings){return env.EMAIL_DELIVERY_ENABLED==='true'&&env.RESEND_API_KEY&&env.EMAIL_FROM?'queued':'awaiting_provider'}
 app.post('/api/auth/login',async c=>{
@@ -122,18 +124,17 @@ app.get('/api/investor/overview',async c=>{
 });
 app.get('/api/investor/onboarding',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
- // Lazily provision a share code for accounts created before migration 0008.
- await c.env.DB.prepare('INSERT OR IGNORE INTO referral_codes(code,user_id) VALUES(?,?)').bind(user.id.replaceAll('-',''),user.id).run();
- const [profile,code,count,email]=await Promise.all([
+ const [profile,email,member]=await Promise.all([
   c.env.DB.prepare('SELECT display_name,terms_accepted_at FROM account_profiles WHERE user_id=?').bind(user.id).first<{display_name:string,terms_accepted_at:string}>(),
-  c.env.DB.prepare('SELECT code FROM referral_codes WHERE user_id=?').bind(user.id).first<{code:string}>(),
-  c.env.DB.prepare('SELECT COUNT(*) AS total FROM referral_attributions a JOIN referral_codes r ON r.code=a.code WHERE r.user_id=?').bind(user.id).first<{total:number}>(),
-  c.env.DB.prepare('SELECT status FROM email_outbox WHERE user_id=?').bind(user.id).first<{status:string}>()
+  c.env.DB.prepare('SELECT status FROM email_outbox WHERE user_id=?').bind(user.id).first<{status:string}>(),
+  membership(c.env.DB,user.id)
  ]);
- return c.json({name:profile?.display_name||null,termsAcceptedAt:profile?.terms_accepted_at||null,
+ return c.json({name:profile?.display_name||null,memberId:user.id,termsAcceptedAt:profile?.terms_accepted_at||null,
   emailVerified:false,welcomeEmail:email?.status==='sent'?'sent':envEmailStatus(c.env),
-  referral:{url:new URL('/r/'+code!.code,c.env.APP_ORIGIN).href,registrations:count?.total||0,rewardsEnabled:false}});
+  signupDeposit:member.deposit,activated:member.activated,perks:member.perks,
+  referral:{code:user.id,url:new URL('/r/'+user.id,c.env.APP_ORIGIN).href,...member.referral,rewardsEnabled:false}});
 });
+
 app.get('/api/investor/preferences',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
  const selected=await c.env.DB.prepare('SELECT entry_tier_usd,payout_cycle,acknowledgement_at,updated_at FROM investor_preferences WHERE user_id=?').bind(user.id).first<any>();
@@ -331,7 +332,7 @@ app.get('/api/transparency',async c=>{
   return c.json({asOf:new Date().toISOString(),fundingEnabled:false,liveTradingEnabled:false,categories,verifiedPerformance:latest.results||[],announcements:announcements.results||[],notice:'No publication is proof of independent verification unless the source and verifier are provided. Historical performance does not guarantee future returns.'});
 });
 app.all('/api/funding/*',c=>c.json({error:'Funding and withdrawals are not enabled'},403));
-app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',release:'onboarding-v1',fundingEnabled:false,liveTradingEnabled:false}));
+app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',release:'member-referrals-v2',fundingEnabled:false,liveTradingEnabled:false}));
 app.get('/api/ready',async c=>{
  // Preparing these queries validates required columns as well as table presence.
  await c.env.DB.batch([
@@ -340,9 +341,12 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT status,available_at,lease_until FROM email_outbox LIMIT 0'),
   c.env.DB.prepare('SELECT sender,token,treasury FROM celo_testnet_deposit_intents LIMIT 0'),
   c.env.DB.prepare('SELECT event_key,amount_minor FROM ledger_entries LIMIT 0'),
-  c.env.DB.prepare('SELECT intent_id,amount_minor FROM celo_test_credits LIMIT 0')
+  c.env.DB.prepare('SELECT intent_id,amount_minor FROM celo_test_credits LIMIT 0'),
+  c.env.DB.prepare('SELECT required_minor,settled_minor,active FROM member_activation LIMIT 0'),
+  c.env.DB.prepare('SELECT payment_ref,refunded_minor,environment FROM signup_deposits LIMIT 0'),
+  c.env.DB.prepare('SELECT metric,threshold,status FROM member_perks LIMIT 0')
  ]);
- return c.json({ready:true,schema:8,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:9,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
@@ -359,10 +363,11 @@ async function entryPage(c:import('hono').Context<{Bindings:Bindings}>) {
 app.get('/join',entryPage);
 app.get('/dashboard',entryPage);
 app.get('/r/:code',async c=>{
- const code=c.req.param('code');
+ const code=c.req.param('code').toLowerCase();
  if(!referralPattern.test(code))return c.text('Invitation not found',404);
- const found=await c.env.DB.prepare('SELECT code FROM referral_codes WHERE code=?').bind(code).first();
+ const found=await c.env.DB.prepare('SELECT user_id FROM referral_codes WHERE (code=? OR user_id=?) AND user_id IS NOT NULL').bind(code,code).first<{user_id:string}>();
  if(!found)return c.text('Invitation not found',404);
+ if(c.req.param('code')!==found.user_id)return c.redirect('/r/'+found.user_id,301);
  return entryPage(c);
 });
 export default {fetch:app.fetch, scheduled(_event:ScheduledController,env:Bindings,ctx:ExecutionContext){

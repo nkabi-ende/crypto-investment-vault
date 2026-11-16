@@ -11,7 +11,6 @@ CREATE TABLE referral_codes (
  label TEXT,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-INSERT INTO referral_codes(code,label) VALUES('kzn-ai','KZN AI Solutions launch');
 CREATE TABLE referral_attributions (
  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
  code TEXT NOT NULL REFERENCES referral_codes(code),
