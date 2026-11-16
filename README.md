@@ -48,4 +48,8 @@ Migration `0003_transparency.sql` adds:
 
 **Publishing policy:** No public admin editing interface exists yet. Publish records only through a controlled, audited operational workflow after verifying evidence. This endpoint alone does not validate the authenticity of external verification links. Do not expose direct D1 write access or use the presence of a record as proof of compliance. An authenticated, role-restricted publishing workflow with approval history is a remaining production task.
 
-Run `npm run db:migrate:local` or `npm run db:migrate:remote` to apply all three migrations before testing the transparency endpoint.
+Run `npm run db:migrate:local` or `npm run db:migrate:remote` to apply all migrations before testing the transparency endpoint.
+
+## Signup and referral release
+
+See [production onboarding](docs/production-onboarding.md) for public signup links, migration 0008, transactional email activation, verification limits and the outstanding MiniPay treasury configuration. Run `npm run check` before deployment and `npm run test:smoke` after deployment.

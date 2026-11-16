@@ -1,8 +1,12 @@
 import { pbkdf2Sync } from 'node:crypto';
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
+import { deliverEmails } from './email';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-type Bindings = { DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
+type Bindings = { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
 const app = new Hono<{Bindings:Bindings}>();
+app.onError((error,c)=>{console.error('CIV request failed',c.req.path,error instanceof Error ? error.name : 'UnknownError');return c.json({error:'Account service temporarily unavailable. Please try again.'},503)});
+app.use('/api/*',bodyLimit({maxSize:16384,onError:c=>c.json({error:'Request too large'},413)}));
 const enc = new TextEncoder();
 const b64 = (bytes:Uint8Array)=> btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 const rand = (n=32)=>b64(crypto.getRandomValues(new Uint8Array(n)));
@@ -19,24 +23,86 @@ async function passwordHash(password:string,salt:string) {
  return b64(material);
 }
 function same(a:string,b:string){if(a.length!==b.length)return false;let diff=0;for(let i=0;i<a.length;i++)diff|=a.charCodeAt(i)^b.charCodeAt(i);return diff===0}
-async function currentUser(c:any){const token=getCookie(c,'civ_session');if(!token)return null;const hash=await digest(token);return await c.env.DB.prepare('SELECT users.id, users.email FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.id_hash=? AND sessions.expires_at>?').bind(hash,Date.now()).first<{id:string,email:string}>()}
-async function session(c:any, id:string, accountWrites:D1PreparedStatement[] = []) {
+async function currentUser(c:import('hono').Context<{Bindings:Bindings}>){const token=getCookie(c,'civ_session');if(!token)return null;const hash=await digest(token);return await c.env.DB.prepare('SELECT users.id, users.email FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.id_hash=? AND sessions.expires_at>?').bind(hash,Date.now()).first<{id:string,email:string}>()}
+async function session(c:import('hono').Context<{Bindings:Bindings}>, id:string, accountWrites:D1PreparedStatement[] = []) {
   const token = rand();
   const lifetimeSeconds = 7 * 86400;
   const insertSession = c.env.DB.prepare('INSERT INTO sessions(id_hash,user_id,expires_at) VALUES(?,?,?)')
     .bind(await digest(token), id, Date.now() + lifetimeSeconds * 1000);
-  await c.env.DB.batch([...accountWrites, insertSession]);
+  const oldToken=getCookie(c,'civ_session');
+  const retire=oldToken?[c.env.DB.prepare('DELETE FROM sessions WHERE id_hash=?').bind(await digest(oldToken))]:[];
+  await c.env.DB.batch([...accountWrites,...retire,insertSession]);
   setCookie(c, 'civ_session', token, {
     httpOnly: true, secure: new URL(c.req.url).protocol === 'https:',
     sameSite: 'Strict', path: '/', maxAge: lifetimeSeconds
   });
 }
 app.use('/api/*',async(c,next)=>{c.header('Cache-Control','no-store');c.header('X-Content-Type-Options','nosniff');c.header('Referrer-Policy','no-referrer');if(c.req.method!=='GET'&&c.req.method!=='HEAD'){const origin=c.req.header('origin');const url=new URL(c.req.url);if(origin&&origin!==url.origin)return c.json({error:'Cross-origin requests are not allowed'},403)}await next()});
-app.post('/api/auth/register',async c=>{let body:any;try{body=await c.req.json()}catch{return c.json({error:'Invalid request'},400)}const email=String(body.email||'').trim().toLowerCase(),password=String(body.password||'');if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||password.length<12||password.length>128)return c.json({error:'Use a valid email and password of at least 12 characters'},400);const id=crypto.randomUUID(),salt='v2:'+rand(16),hash=await passwordHash(password,salt);try{await session(c,id,[c.env.DB.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,email,hash,salt),c.env.DB.prepare('INSERT INTO portfolios(user_id) VALUES(?)').bind(id),c.env.DB.prepare('INSERT INTO audit_events(id,user_id,event_type) VALUES(?,?,?)').bind(crypto.randomUUID(),id,'registered')]);}catch(error){
-  if(String(error).includes('UNIQUE constraint failed: users.email'))return c.json({error:'Unable to create account; email may already be registered'},409);
-  return c.json({error:'Account service temporarily unavailable. Please try again.'},503)
-}return c.json({user:{id,email}})});
-app.post('/api/auth/login',async c=>{let body:any;try{body=await c.req.json()}catch{return c.json({error:'Invalid request'},400)}const email=String(body.email||'').trim().toLowerCase(),password=String(body.password||'');const now=Date.now();const attempts=await c.env.DB.prepare('SELECT attempts,window_start,locked_until FROM auth_attempts WHERE email=?').bind(email).first<any>();if(attempts&&attempts.locked_until>now)return c.json({error:'Too many attempts. Try again later.'},429);const user=await c.env.DB.prepare('SELECT id,email,password_hash,salt FROM users WHERE email=?').bind(email).first<any>();const check=await passwordHash(password,user?.salt||'v2:fallback');if(!user||!same(check,user.password_hash)){const within=attempts&&now-attempts.window_start<900000;const count=within?attempts.attempts+1:1;await c.env.DB.prepare('INSERT INTO auth_attempts(email,attempts,window_start,locked_until) VALUES(?,?,?,?) ON CONFLICT(email) DO UPDATE SET attempts=excluded.attempts,window_start=excluded.window_start,locked_until=excluded.locked_until').bind(email,count,within?attempts.window_start:now,count>=5?now+900000:0).run();return c.json({error:'Invalid credentials'},401)}await c.env.DB.prepare('DELETE FROM auth_attempts WHERE email=?').bind(email).run();await session(c,user.id);return c.json({user:{id:user.id,email:user.email}})});
+// Reject abusive authentication traffic before password derivation or D1 reads.
+app.use('/api/auth/*',async(c,next)=>{
+ if (c.req.method==='POST') {
+  const {success}=await c.env.AUTH_LIMITER.limit({key:c.req.header('cf-connecting-ip')||'local'});
+  if(!success){c.header('Retry-After','60');return c.json({error:'Too many requests. Please wait a minute.'},429)}
+ }
+ await next();
+});
+const emailPattern=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const referralPattern=/^[a-z0-9_-]{3,64}$/;
+const termsVersion='2026-11-16';
+app.post('/api/auth/register',async c=>{
+ const body=await c.req.json().catch(()=>null);
+ if(!body||typeof body!=='object')return c.json({error:'Invalid request'},400);
+ const email=String(body.email||'').trim().toLowerCase(),password=String(body.password||'');
+ const name=String(body.name||'').trim().replace(/\s+/g,' ');
+ const referral=String(body.referral||'').toLowerCase();
+ if(email.length>254||!emailPattern.test(email)||password.length<12||password.length>128)
+  return c.json({error:'Use a valid email and a password of 12–128 characters'},400);
+ if(name.length<2||name.length>80||/[\u0000-\u001f<>]/.test(name))return c.json({error:'Enter your name (2–80 characters)'},400);
+ if(body.acceptTerms!==true)return c.json({error:'Accept the Terms, Privacy Notice and Risk Disclosure to continue'},400);
+ let attributedCode:string|null=null;
+ if(referralPattern.test(referral)) {
+  const record=await c.env.DB.prepare('SELECT code FROM referral_codes WHERE code=?').bind(referral).first<{code:string}>();
+  attributedCode=record?.code||null;
+ }
+ const id=crypto.randomUUID(),salt='v2:'+rand(16),hash=await passwordHash(password,salt);
+ const writes=[
+  c.env.DB.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,email,hash,salt),
+  c.env.DB.prepare('INSERT INTO portfolios(user_id) VALUES(?)').bind(id),
+  c.env.DB.prepare('INSERT INTO account_profiles(user_id,display_name,terms_version) VALUES(?,?,?)').bind(id,name,termsVersion),
+  c.env.DB.prepare('INSERT INTO referral_codes(code,user_id) VALUES(?,?)').bind(id.replaceAll('-',''),id),
+  c.env.DB.prepare('INSERT INTO email_outbox(id,user_id,event_type,available_at) VALUES(?,?,?,?)').bind(crypto.randomUUID(),id,'account.welcome.v1',Date.now()),
+  c.env.DB.prepare('INSERT INTO audit_events(id,user_id,event_type) VALUES(?,?,?)').bind(crypto.randomUUID(),id,'registered')
+ ];
+ if(attributedCode)writes.push(c.env.DB.prepare('INSERT INTO referral_attributions(user_id,code) VALUES(?,?)').bind(id,attributedCode));
+ try{await session(c,id,writes)}catch(error){
+  if(String(error).includes('UNIQUE constraint failed: users.email'))return c.json({error:'Unable to create account. Try signing in or use another email.'},409);
+  throw error;
+ }
+ return c.json({user:{id,email,name},welcomeEmail:envEmailStatus(c.env)},201);
+});
+function envEmailStatus(env:Bindings){return env.EMAIL_DELIVERY_ENABLED==='true'&&env.RESEND_API_KEY&&env.EMAIL_FROM?'queued':'awaiting_provider'}
+app.post('/api/auth/login',async c=>{
+ const body=await c.req.json().catch(()=>null);
+ if(!body||typeof body!=='object')return c.json({error:'Invalid request'},400);
+ const email=String(body.email||'').trim().toLowerCase(),password=String(body.password||'');
+ if(!emailPattern.test(email)||email.length>254||!password.length||password.length>128)return c.json({error:'Invalid credentials'},401);
+ const now=Date.now();
+ const attempts=await c.env.DB.prepare('SELECT locked_until FROM auth_attempts WHERE email=?').bind(email).first<{locked_until:number}>();
+ if(attempts&&attempts.locked_until>now){c.header('Retry-After',String(Math.ceil((attempts.locked_until-now)/1000)));return c.json({error:'Too many attempts. Try again later.'},429)}
+ const user=await c.env.DB.prepare('SELECT id,email,password_hash,salt FROM users WHERE email=?').bind(email).first<{id:string,email:string,password_hash:string,salt:string}>();
+ const check=await passwordHash(password,user?.salt||'v2:fallback');
+ if(!user||!same(check,user.password_hash)){
+  await c.env.DB.prepare(`INSERT INTO auth_attempts(email,attempts,window_start,locked_until) VALUES(?,1,?,0)
+   ON CONFLICT(email) DO UPDATE SET
+   attempts=CASE WHEN auth_attempts.window_start>? THEN auth_attempts.attempts+1 ELSE 1 END,
+   locked_until=CASE WHEN auth_attempts.window_start>? AND auth_attempts.attempts>=4 THEN ? ELSE 0 END,
+   window_start=CASE WHEN auth_attempts.window_start>? THEN auth_attempts.window_start ELSE ? END`)
+   .bind(email,now,now-900000,now-900000,now+900000,now-900000,now).run();
+  return c.json({error:'Invalid credentials'},401);
+ }
+ await session(c,user.id,[c.env.DB.prepare('DELETE FROM auth_attempts WHERE email=?').bind(email)]);
+ return c.json({user:{id:user.id,email:user.email}});
+});
 app.post('/api/auth/logout',async c=>{const token=getCookie(c,'civ_session');if(token)await c.env.DB.prepare('DELETE FROM sessions WHERE id_hash=?').bind(await digest(token)).run();deleteCookie(c,'civ_session',{path:'/'});return c.json({ok:true})});
 app.get('/api/me',async c=>{const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);const portfolio=await c.env.DB.prepare('SELECT cash_usdt,updated_at FROM portfolios WHERE user_id=?').bind(user.id).first();return c.json({user,portfolio,fundingEnabled:false,product:'The Big 7'})});
 app.get('/api/investor/overview',async c=>{
@@ -53,6 +119,20 @@ app.get('/api/investor/overview',async c=>{
     fundingEnabled:false,withdrawalsEnabled:false,liveTradingEnabled:false,
     notice:'Account data comes from CIV D1. No investments or returns are simulated in this view.'
   });
+});
+app.get('/api/investor/onboarding',async c=>{
+ const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+ // Lazily provision a share code for accounts created before migration 0008.
+ await c.env.DB.prepare('INSERT OR IGNORE INTO referral_codes(code,user_id) VALUES(?,?)').bind(user.id.replaceAll('-',''),user.id).run();
+ const [profile,code,count,email]=await Promise.all([
+  c.env.DB.prepare('SELECT display_name,terms_accepted_at FROM account_profiles WHERE user_id=?').bind(user.id).first<{display_name:string,terms_accepted_at:string}>(),
+  c.env.DB.prepare('SELECT code FROM referral_codes WHERE user_id=?').bind(user.id).first<{code:string}>(),
+  c.env.DB.prepare('SELECT COUNT(*) AS total FROM referral_attributions a JOIN referral_codes r ON r.code=a.code WHERE r.user_id=?').bind(user.id).first<{total:number}>(),
+  c.env.DB.prepare('SELECT status FROM email_outbox WHERE user_id=?').bind(user.id).first<{status:string}>()
+ ]);
+ return c.json({name:profile?.display_name||null,termsAcceptedAt:profile?.terms_accepted_at||null,
+  emailVerified:false,welcomeEmail:email?.status==='sent'?'sent':envEmailStatus(c.env),
+  referral:{url:new URL('/r/'+code!.code,c.env.APP_ORIGIN).href,registrations:count?.total||0,rewardsEnabled:false}});
 });
 app.get('/api/investor/preferences',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
@@ -251,6 +331,45 @@ app.get('/api/transparency',async c=>{
   return c.json({asOf:new Date().toISOString(),fundingEnabled:false,liveTradingEnabled:false,categories,verifiedPerformance:latest.results||[],announcements:announcements.results||[],notice:'No publication is proof of independent verification unless the source and verifier are provided. Historical performance does not guarantee future returns.'});
 });
 app.all('/api/funding/*',c=>c.json({error:'Funding and withdrawals are not enabled'},403));
-app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',fundingEnabled:false,liveTradingEnabled:false}));
+app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',release:'onboarding-v1',fundingEnabled:false,liveTradingEnabled:false}));
+app.get('/api/ready',async c=>{
+ // Preparing these queries validates required columns as well as table presence.
+ await c.env.DB.batch([
+  c.env.DB.prepare('SELECT user_id,display_name,terms_version FROM account_profiles LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,code FROM referral_attributions LIMIT 0'),
+  c.env.DB.prepare('SELECT status,available_at,lease_until FROM email_outbox LIMIT 0'),
+  c.env.DB.prepare('SELECT sender,token,treasury FROM celo_testnet_deposit_intents LIMIT 0'),
+  c.env.DB.prepare('SELECT event_key,amount_minor FROM ledger_entries LIMIT 0'),
+  c.env.DB.prepare('SELECT intent_id,amount_minor FROM celo_test_credits LIMIT 0')
+ ]);
+ return c.json({ready:true,schema:8,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+});
 app.all('/api/*',c=>c.json({error:'Not found'},404));
-export default {fetch:app.fetch, scheduled(_event:ScheduledController,env:Bindings,ctx:ExecutionContext){ctx.waitUntil(reconcile(env))}};
+// Return the complete signup page to social crawlers without needing client JavaScript.
+async function entryPage(c:import('hono').Context<{Bindings:Bindings}>) {
+ const response=await c.env.ASSETS.fetch(new Request(new URL('/',c.req.url)));
+ let html=await response.text();
+ const canonical=new URL(c.req.path,c.env.APP_ORIGIN).href;
+ html=html.replace('<link rel="canonical" href="https://cryptoinvestmentvault.com/">',`<link rel="canonical" href="${canonical}">`).replace('<meta property="og:url" content="https://cryptoinvestmentvault.com/">',`<meta property="og:url" content="${canonical}">`);
+ if(c.req.path==='/dashboard')html=html.replace('index,follow,max-image-preview:large','noindex,nofollow');
+ c.header('Cache-Control','no-store');
+ c.header('X-Content-Type-Options','nosniff');
+ return c.html(html);
+}
+app.get('/join',entryPage);
+app.get('/dashboard',entryPage);
+app.get('/r/:code',async c=>{
+ const code=c.req.param('code');
+ if(!referralPattern.test(code))return c.text('Invitation not found',404);
+ const found=await c.env.DB.prepare('SELECT code FROM referral_codes WHERE code=?').bind(code).first();
+ if(!found)return c.text('Invitation not found',404);
+ return entryPage(c);
+});
+export default {fetch:app.fetch, scheduled(_event:ScheduledController,env:Bindings,ctx:ExecutionContext){
+ ctx.waitUntil(reconcile(env).catch(()=>console.error('Testnet reconciliation unavailable')));
+ ctx.waitUntil(deliverEmails(env));
+ ctx.waitUntil(env.DB.batch([
+  env.DB.prepare('DELETE FROM sessions WHERE expires_at<?').bind(Date.now()),
+  env.DB.prepare('DELETE FROM auth_attempts WHERE window_start<? AND locked_until<?').bind(Date.now()-86400000,Date.now())
+ ]));
+}};
