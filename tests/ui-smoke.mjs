@@ -12,7 +12,7 @@ const id='00000000-0000-4000-8000-000000000001';
 const server=createServer(async(req,res)=>{
  const path=new URL(req.url,'http://localhost').pathname;res.setHeader('Content-Type',path.startsWith('/api/')?'application/json':'text/html');
  const reply=d=>res.end(JSON.stringify(d));
- if(/^\/(civ-mark|favicon)\.svg$/.test(path)||/^\/assets\/coins\/(btc|eth|sol|xrp|bnb|ada|doge)\.svg$/.test(path)){res.setHeader('Content-Type','image/svg+xml');return res.end(await readFile('public'+path))}if(path==='/experience.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public/experience.js'))}if(!path.startsWith('/api/'))return res.end(html);
+ if(/^\/(civ-mark|favicon)\.svg$/.test(path)||/^\/assets\/coins\/(btc|eth|sol|xrp|bnb|ada|doge)\.svg$/.test(path)){res.setHeader('Content-Type','image/svg+xml');return res.end(await readFile('public'+path))}if(path==='/experience.js'||path==='/market-watch.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public'+path))}if(!path.startsWith('/api/'))return res.end(html);
  if(path==='/api/investor/overview')await new Promise(resolve=>setTimeout(resolve,650));
  if(path==='/api/auth/register'||path==='/api/auth/login'){res.setHeader('Set-Cookie','ui_member=1; Path=/; HttpOnly; SameSite=Lax');return reply({user:{id,email:'preview@example.invalid'}})}
  if(path==='/api/me'){if(req.headers['x-ui-auth']==='0'&&!String(req.headers.cookie||'').includes('ui_member=1')){res.statusCode=401;return reply({error:'Unauthorized'})}return reply({user:{id,email:'preview@example.invalid'}})}
@@ -33,7 +33,7 @@ const server=createServer(async(req,res)=>{
  if(path==='/api/market-pulse')return reply({source:'CoinGecko',asOf:new Date().toISOString(),global:{marketCapUsd:3000000000000,volume24hUsd:120000000000,btcDominancePct:55.2,marketCapChange24hPct:1.5},trending:[{id:'bitcoin',name:'Bitcoin',symbol:'BTC',url:'https://www.coingecko.com/en/coins/bitcoin',change24hPct:1.5}]});
  if(path==='/api/headlines')return reply({source:'CryptoPanic',asOf:new Date().toISOString(),articles:[{title:'Test publisher headline - example only',url:'https://example.com/crypto-article',source:'Example Publisher',publishedAt:new Date().toISOString()}]});
  if(path==='/api/transparency')return reply({asOf:new Date().toISOString(),categories:[],verifiedPerformance:[],announcements:[]});
- if(path==='/api/markets')return reply({asOf:new Date().toISOString(),assets:[]});
+ if(path==='/api/markets')return reply({source:'CoinGecko',asOf:new Date().toISOString(),stale:false,assets:[['BTC',100000.25],['ETH',3450.67],['SOL',158.42],['XRP',2.14],['BNB',827.35],['ADA',0.714],['DOGE',0.24]].map(([symbol,priceUsd])=>({symbol,priceUsd,change24h:1.25,name:symbol}))});
  res.statusCode=404;return reply({error:'Not found'});
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const origin='http://127.0.0.1:'+server.address().port;
@@ -44,7 +44,11 @@ try{
   const context=await browser.newContext({viewport:{width,height:844},reducedMotion:'reduce'});const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());
   await page.addInitScript(()=>{window.ethereum={isMiniPay:true,request:async({method})=>{if(method==='eth_chainId')return '0xa4ec';if(method==='eth_accounts')return ['0x'+'1'.repeat(40)];if(method==='eth_call')return '0x3b9aca00';throw Error('Unexpected wallet request: '+method)}}});
-  await page.goto(origin+'/dashboard');if(width===390){await page.locator('#vaultLoader').waitFor({state:'visible'});await page.screenshot({path:'artifacts/ui/mobile-loader.png'});}await page.locator('#vaultLoader').waitFor({state:'hidden'});assert.equal(await page.locator('.nav .brand-mark').evaluate(img=>img.complete&&img.naturalWidth>0),true);await expect(page.locator('#fundingMembershipStatus')).toHaveText('Awaiting deposit');
+  await page.goto(origin+'/dashboard');if(width===390){await page.locator('#vaultLoader').waitFor({state:'visible'});await page.screenshot({path:'artifacts/ui/mobile-loader.png'});}await page.locator('#vaultLoader').waitFor({state:'hidden'});
+  await expect(page.locator('#quoteBTC')).toContainText('$100,000.25');
+  await expect(page.locator('#quoteADA')).toContainText('$0.714');
+  await expect(page.locator('#marketWatchStatus')).toContainText('CoinGecko spot prices');
+  assert.equal(await page.locator('.nav .brand-mark').evaluate(img=>img.complete&&img.naturalWidth>0),true);await expect(page.locator('#fundingMembershipStatus')).toHaveText('Awaiting deposit');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'Home horizontal overflow at '+width);
   await expect(page.locator('#marketPulseGrid')).toContainText('Total crypto market cap');
   await expect(page.locator('#cryptoHeadlines')).toContainText('Test publisher headline');
