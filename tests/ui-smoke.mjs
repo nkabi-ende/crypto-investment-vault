@@ -30,7 +30,7 @@ const browser=await chromium.launch({headless:true});
 await mkdir('artifacts/ui',{recursive:true});
 try{
  for(const width of [320,390,768,1280]){
-  const context=await browser.newContext({viewport:{width,height:844}});const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const context=await browser.newContext({viewport:{width,height:844},reducedMotion:'reduce'});const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());
   await page.addInitScript(()=>{window.ethereum={isMiniPay:true,request:async({method})=>{if(method==='eth_chainId')return '0xa4ec';if(method==='eth_accounts')return ['0x'+'1'.repeat(40)];if(method==='eth_call')return '0x3b9aca00';throw Error('Unexpected wallet request: '+method)}}});
   await page.goto(origin+'/dashboard');await expect(page.locator('#fundingMembershipStatus')).toHaveText('Awaiting deposit');
@@ -41,10 +41,10 @@ try{
   if(width<=700){const nav=await page.locator('.vault-nav').boundingBox();assert.ok(nav.y+nav.height<=844&&nav.y>650);assert.equal(await page.locator('.vault-nav button').count(),5)}
   await page.locator('[data-deposit-amount="200"]').click();await page.locator('#signupQuote').click();await expect(page.locator('#paymentQuoteSummary')).toContainText('200.000000 USDC');assert.equal(lastQuoteBody.amount,200);assert.equal(lastQuoteBody.symbol,'USDC');
   assert.match(await page.locator('#externalWalletDetails').getAttribute('class'),/hidden/);assert.equal(await page.locator('#receivingWallet').inputValue(),'','MiniPay must not expose a raw wallet address');
-  if(width===390)await page.screenshot({path:'artifacts/ui/mobile-deposit.png',fullPage:true});
+  if(width===390){await page.screenshot({path:'artifacts/ui/mobile-deposit-full.png',fullPage:true});await page.locator('#signupCheckout').scrollIntoViewIfNeeded();await page.screenshot({path:'artifacts/ui/mobile-deposit.png'})}
   await page.locator('[data-vault-tab="account"]').click();await expect(page.locator('#memberId')).toHaveText(id);
   assert.deepEqual(errors,[],'Uncaught UI error');await context.close();
  }
- const context=await browser.newContext({viewport:{width:390,height:844},extraHTTPHeaders:{'x-ui-auth':'0'}});const page=await context.newPage();await page.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());await page.goto(origin+'/join');await page.locator('#authForm').waitFor();assert.equal(await page.locator('#signupDepositNotice').isVisible(),true);assert.match(await page.locator('#signupDepositNotice').innerText(),/Minimum deposit: 100/);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);await page.screenshot({path:'artifacts/ui/mobile-signup.png',fullPage:true});await context.close();
+ const context=await browser.newContext({viewport:{width:390,height:844},reducedMotion:'reduce',extraHTTPHeaders:{'x-ui-auth':'0'}});const page=await context.newPage();await page.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());await page.goto(origin+'/join');await page.locator('#authForm').waitFor();assert.equal(await page.locator('#signupDepositNotice').isVisible(),true);assert.match(await page.locator('#signupDepositNotice').innerText(),/Minimum deposit: 100/);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);await page.screenshot({path:'artifacts/ui/mobile-signup.png'});await context.close();
  console.log('Mobile UI passed: 320, 390, 768, 1280px; navigation, amount selection, wallet privacy, signup and quote review.');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve))}
