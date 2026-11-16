@@ -158,7 +158,7 @@ app.post('/api/payments/quotes/:id/verify',async c=>{
 });
 app.get('/api/payments/wallet',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
- const config=paymentConfig(c.env);return c.json({memberId:user.id,network:config.mode==='production'?'Celo mainnet':'Celo Sepolia',chainId:config.chainId,address:config.ready?config.treasury:null,ready:config.ready,minimumDeposit:100,manualVerification:'review_required',cardCheckoutEnabled:false});
+ const config=paymentConfig(c.env);return c.json({memberId:user.id,network:config.mode==='production'?'Celo mainnet':'Celo Sepolia',chainId:config.chainId,address:config.liveDepositsEnabled?config.treasury:null,ready:config.liveDepositsEnabled,minimumDeposit:100,manualVerification:'review_required',cardCheckoutEnabled:false});
 });
 app.post('/api/payments/manual-claims',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);

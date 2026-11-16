@@ -40,7 +40,7 @@ try{
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'Deposit horizontal overflow at '+width);
   if(width<=700){const nav=await page.locator('.vault-nav').boundingBox();assert.ok(nav.y+nav.height<=844&&nav.y>650);assert.equal(await page.locator('.vault-nav button').count(),5)}
   await page.locator('[data-deposit-amount="200"]').click();await page.locator('#signupQuote').click();await expect(page.locator('#paymentQuoteSummary')).toContainText('200.000000 USDC');assert.equal(lastQuoteBody.amount,200);assert.equal(lastQuoteBody.symbol,'USDC');
-  assert.equal(await page.locator('#externalWalletDetails').isVisible(),false,'MiniPay must not display raw wallet address');
+  assert.match(await page.locator('#externalWalletDetails').getAttribute('class'),/hidden/);assert.equal(await page.locator('#receivingWallet').inputValue(),'','MiniPay must not expose a raw wallet address');
   if(width===390)await page.screenshot({path:'artifacts/ui/mobile-deposit.png',fullPage:true});
   await page.locator('[data-vault-tab="account"]').click();await expect(page.locator('#memberId')).toHaveText(id);
   assert.deepEqual(errors,[],'Uncaught UI error');await context.close();
