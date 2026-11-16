@@ -18,8 +18,11 @@ migrations_dir = "migrations"
 [vars]
 APP_ORIGIN = "https://cryptoinvestmentvault.com"
 FUNDING_ENABLED = "false"
-PAYMENTS_ENABLED = "false"
-PAYMENT_MODE = "testnet"
+# Production quotes are ON only for the verified canary account set via PAYMENT_CANARY_EMAIL secret.
+# If the secret is absent, malformed or unmatched, all new real-money quotes fail closed.
+PAYMENTS_ENABLED = "true"
+PAYMENT_MODE = "production"
+PAYMENT_CANARY_ONLY = "true"
 CELO_MAINNET_RPC_URL = "https://forno.celo.org"
 EMAIL_DELIVERY_ENABLED = "false"
 CELO_SEPOLIA_RPC_URL = "https://forno.celo-sepolia.celo-testnet.org"

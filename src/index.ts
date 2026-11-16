@@ -4,7 +4,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { deliverEmails } from './email';
 import { membership } from './membership';
 import { marketPulse,cryptoHeadlines } from './market-intelligence';
-import { paymentConfig,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
+import { paymentConfig,pilotAllowed,mainnetPreflight,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 type Bindings = PaymentEnv & { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
 const app = new Hono<{Bindings:Bindings}>();
@@ -134,11 +134,23 @@ app.get('/api/investor/onboarding',async c=>{
  ]);
  return c.json({name:profile?.display_name||null,memberId:user.id,termsAcceptedAt:profile?.terms_accepted_at||null,
   emailVerified:false,welcomeEmail:email?.status==='sent'?'sent':envEmailStatus(c.env),
-  signupDeposit:{...member.deposit,collectionEnabled:paymentConfig(c.env).liveDepositsEnabled},activated:member.activated,balances:member.balances,promotion:member.promotion,perks:member.perks,
+  signupDeposit:{...member.deposit,collectionEnabled:paymentConfig(c.env).liveDepositsEnabled&&pilotAllowed(c.env,user.email)},activated:member.activated,balances:member.balances,promotion:member.promotion,perks:member.perks,
   referral:{code:member.invitationCode,url:new URL('/r/'+member.invitationCode,c.env.APP_ORIGIN).href,...member.referral,rewardsEnabled:true},referralWallet:member.referralWallet});
 });
 
-app.get('/api/payments/config',c=>{const {rpc,treasury,...config}=paymentConfig(c.env);return c.json(config)});
+app.get('/api/payments/config',async c=>{
+ const member=await currentUser(c);
+ const {rpc,treasury,...config}=paymentConfig(c.env);
+ const permitted=pilotAllowed(c.env,member?.email);
+ return c.json({...config,ready:config.ready&&permitted,liveDepositsEnabled:config.liveDepositsEnabled&&permitted,pilotOnly:true});
+});
+app.get('/api/payments/preflight',async c=>{
+ const member=await currentUser(c);
+ if(!member)return c.json({error:'Unauthorized'},401);
+ if(!pilotAllowed(c.env,member.email))return c.json({error:'Production pilot access is restricted'},403);
+ try{return c.json(await mainnetPreflight(c.env))}
+ catch(error){console.error('CIV mainnet preflight failed',error instanceof Error?error.message:'unknown');return c.json({ready:false,error:'Production mainnet validation did not pass. Do not send funds.'},503)}
+});
 app.get('/api/payments/quotes',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
  const rows=await c.env.DB.prepare('SELECT * FROM payment_quotes WHERE user_id=? ORDER BY created_at DESC LIMIT 20').bind(user.id).all();
@@ -149,8 +161,13 @@ app.post('/api/payments/quotes',async c=>{
  const {success}=await c.env.AUTH_LIMITER.limit({key:'payments:'+user.id});if(!success)return c.json({error:'Please wait before requesting another quote'},429);
  const body=await c.req.json().catch(()=>null);
  const config=paymentConfig(c.env);
+ if(!pilotAllowed(c.env,user.email))return c.json({error:'Live deposits are restricted to one authorized pilot account',code:'PILOT_ACCESS_RESTRICTED'},403);
+ if(!config.ready)return c.json({error:'Production pilot payment configuration is incomplete',code:'PILOT_NOT_CONFIGURED'},503);
  if(!config.supportedTokens.includes(body?.symbol)||typeof body?.sender!=='string'||!config.depositPresets.includes(body?.amount))return c.json({error:'Choose a supported token and amount for the selected network'},400);
  if(config.treasury&&body.sender.toLowerCase()===config.treasury)return c.json({error:'This MiniPay wallet is set as CIV’s receiving wallet. Use a separate paying wallet for the deposit.',code:'RECEIVING_WALLET_CANNOT_PAY_ITSELF'},409);
+ const existing=await c.env.DB.prepare('SELECT COUNT(*) AS count FROM funding_receipts WHERE user_id=? AND chain_id=42220').bind(user.id).first<{count:number}>();
+ if(Number(existing?.count||0)>0)return c.json({error:'The private pilot permits one verified real-money deposit per authorized account. Further deposits are paused for review.',code:'PILOT_DEPOSIT_LIMIT'},409);
+ try{await mainnetPreflight(c.env)}catch{return c.json({error:'Celo mainnet or token verification failed. No transfer was initiated.',code:'MAINNET_PREFLIGHT_FAILED'},503)}
  try{return c.json(await createQuote(c.env,user.id,body.symbol,body.sender,body.amount),201)}catch(error){console.error('Quote unavailable',error instanceof Error?error.message:'error');return c.json({error:'Payment quote unavailable. Check payment setup or try again shortly.'},503)}
 });
 app.post('/api/payments/quotes/:id/verify',async c=>{
@@ -162,11 +179,14 @@ app.post('/api/payments/quotes/:id/verify',async c=>{
 });
 app.get('/api/payments/wallet',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
- const config=paymentConfig(c.env);return c.json({memberId:user.id,network:config.mode==='production'?'Celo mainnet':'Celo Sepolia',chainId:config.chainId,address:config.liveDepositsEnabled?config.treasury:null,ready:config.liveDepositsEnabled,minimumDeposit:100,manualVerification:'review_required',cardCheckoutEnabled:false});
+ const config=paymentConfig(c.env),allowed=pilotAllowed(c.env,user.email);
+ return c.json({memberId:user.id,network:config.mode==='production'?'Celo mainnet':'Celo Sepolia',chainId:config.chainId,address:config.liveDepositsEnabled&&allowed?config.treasury:null,ready:config.liveDepositsEnabled&&allowed,minimumDeposit:100,manualVerification:'review_required',cardCheckoutEnabled:false,pilotOnly:true});
 });
 app.post('/api/payments/manual-claims',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
- const config=paymentConfig(c.env);if(!config.liveDepositsEnabled)return c.json({error:'Production collection is not configured'},503);
+ const config=paymentConfig(c.env);
+ if(config.pilotOnly)return c.json({error:'Manual transfer claims are disabled during the pilot; use verified MiniPay checkout only'},403);
+ if(!config.liveDepositsEnabled)return c.json({error:'Production collection is not configured'},503);
  const {success}=await c.env.AUTH_LIMITER.limit({key:'claims:'+user.id});if(!success)return c.json({error:'Please wait before submitting another transfer'},429);
  const body=await c.req.json().catch(()=>null);if(!['USDC','USDT'].includes(body?.asset)||!/^0x[a-fA-F0-9]{64}$/.test(body?.txHash||''))return c.json({error:'Provide a Celo transaction hash and token'},400);
  await c.env.DB.prepare('INSERT OR IGNORE INTO manual_deposit_claims(id,user_id,chain_id,asset,tx_hash) VALUES(?,?,?,?,?)').bind(crypto.randomUUID(),user.id,42220,body.asset,body.txHash.toLowerCase()).run();
@@ -197,7 +217,7 @@ app.get('/api/investor/ledger',async c=>{
  const usdc=funding.results.filter(x=>x.asset==='USDC').reduce((a,x)=>a+x.amount_minor-x.refunded_minor,0);
  return c.json({asOf:new Date().toISOString(),currency:'STABLECOINS',balanceUsdt:usdt/1e6,balanceUsdc:usdc/1e6,
   entries:[...(entries.results||[]).map((x:any)=>({id:x.id,type:x.entry_type,amountUsdt:x.amount_minor/1e6,asset:x.asset,at:x.occurred_at})),...funding.results.map(x=>({id:x.id,type:'verified_deposit',amountUsdt:(x.amount_minor-x.refunded_minor)/1e6,asset:x.asset,at:x.settled_at}))],
-  withdrawalRequests:requests.results,depositsEnabled:paymentConfig(c.env).liveDepositsEnabled,withdrawalsEnabled:false,payoutsEnabled:false,valuationPolicy:'Actual stablecoin units, recorded separately. CIV is a platform, not a token.'});
+  withdrawalRequests:requests.results,depositsEnabled:paymentConfig(c.env).liveDepositsEnabled&&pilotAllowed(c.env,user.email),withdrawalsEnabled:false,payoutsEnabled:false,valuationPolicy:'Actual stablecoin units, recorded separately. CIV is a platform, not a token.'});
 });
 app.get('/api/investor/projection',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
@@ -376,7 +396,7 @@ app.get('/api/transparency',async c=>{
   return c.json({asOf:new Date().toISOString(),fundingEnabled:false,liveTradingEnabled:false,categories,verifiedPerformance:latest.results||[],announcements:announcements.results||[],notice:'No publication is proof of independent verification unless the source and verifier are provided. Historical performance does not guarantee future returns.'});
 });
 app.all('/api/funding/*',c=>c.json({error:'Funding and withdrawals are not enabled'},403));
-app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',release:'stablecoin-funding-v4',membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,fundingEnabled:false,liveTradingEnabled:false}));
+app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The Big 7',release:'stablecoin-funding-v4',membershipDepositsEnabled:false,pilotOnly:true,fundingEnabled:false,liveTradingEnabled:false}));
 app.get('/api/ready',async c=>{
  // Preparing these queries validates required columns as well as table presence.
  await c.env.DB.batch([
@@ -396,7 +416,7 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT user_id,status FROM referral_wallet LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,status FROM manual_deposit_claims LIMIT 0')
  ]);
- return c.json({ready:true,schema:12,membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled});
+ return c.json({ready:true,schema:12,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
