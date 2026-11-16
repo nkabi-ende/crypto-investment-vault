@@ -48,7 +48,7 @@ try{
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'Home horizontal overflow at '+width);
   await expect(page.locator('#marketPulseGrid')).toContainText('Total crypto market cap');
   await expect(page.locator('#cryptoHeadlines')).toContainText('Test publisher headline');
-  for(const icon of ['btc','eth','sol','xrp','bnb','ada','doge'])assert.equal(await page.locator('.orbit-scene img[src="/assets/coins/'+icon+'.svg"]').evaluate(img=>img.complete&&img.naturalWidth>0),true,'Missing source-backed hero icon: '+icon);
+  for(const icon of ['btc','eth','sol','xrp','bnb','ada','doge'])assert.equal(await page.locator('.orbit-scene img[src="/assets/coins/'+icon+'.svg"]').first().evaluate(img=>img.complete&&img.naturalWidth>0),true,'Missing source-backed hero icon: '+icon);
   if(width===390)await page.screenshot({path:'artifacts/ui/mobile-home.png'});
   await page.locator('[data-vault-tab="deposits"]').click();
   await expect(page.locator('#civDepositGuide')).toBeVisible();await expect(page.locator('#civGuideTitle')).toContainText('Prepare a paying wallet');
