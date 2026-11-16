@@ -165,6 +165,9 @@ app.post('/api/payments/quotes',async c=>{
  if(!config.ready)return c.json({error:'Production pilot payment configuration is incomplete',code:'PILOT_NOT_CONFIGURED'},503);
  if(!config.supportedTokens.includes(body?.symbol)||typeof body?.sender!=='string'||!config.depositPresets.includes(body?.amount))return c.json({error:'Choose a supported token and amount for the selected network'},400);
  if(config.treasury&&body.sender.toLowerCase()===config.treasury)return c.json({error:'This MiniPay wallet is set as CIV’s receiving wallet. Use a separate paying wallet for the deposit.',code:'RECEIVING_WALLET_CANNOT_PAY_ITSELF'},409);
+ const existing=await c.env.DB.prepare('SELECT COUNT(*) AS count FROM funding_receipts WHERE user_id=? AND chain_id=42220').bind(user.id).first<{count:number}>();
+ if(Number(existing?.count||0)>0)return c.json({error:'The private pilot permits one verified real-money deposit per authorized account. Further deposits are paused for review.',code:'PILOT_DEPOSIT_LIMIT'},409);
+ try{await mainnetPreflight(c.env)}catch{return c.json({error:'Celo mainnet or token verification failed. No transfer was initiated.',code:'MAINNET_PREFLIGHT_FAILED'},503)}
  try{return c.json(await createQuote(c.env,user.id,body.symbol,body.sender,body.amount),201)}catch(error){console.error('Quote unavailable',error instanceof Error?error.message:'error');return c.json({error:'Payment quote unavailable. Check payment setup or try again shortly.'},503)}
 });
 app.post('/api/payments/quotes/:id/verify',async c=>{
