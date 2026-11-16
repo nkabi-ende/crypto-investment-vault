@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 const origin=process.env.CIV_ORIGIN||'https://cryptoinvestmentvault.com';
 async function json(path){const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);return r.json()}
 const status=await json('/api/status');assert.equal(status.release,'stablecoin-funding-v4');assert.equal(status.fundingEnabled,false);assert.equal(status.liveTradingEnabled,false);assert.equal(status.membershipDepositsEnabled,false);assert.equal(status.pilotOnly,true);
-const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,12);
+const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,13);
 for(const path of ['/join']){
  const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes('id="authForm"'));assert.ok(html.includes('id="vaultLoader"'));assert.ok(html.includes('class="site-footer"'));assert.ok(html.includes('/civ-mark.svg'));assert.ok(html.includes('og-invitation-v3.png'));assert.ok(html.includes(`property="og:url" content="${origin}${path}"`));
 }
@@ -22,10 +22,20 @@ for(const asset of ['btc','eth','sol','xrp','bnb','ada','doge']){
  assert.equal(r.status,200,'Missing verified coin artwork: '+asset);
  assert.ok(String(r.headers.get('content-type')).startsWith('image/svg+xml'));
 }
+const watch=await fetch(new URL('/market-watch.js',origin));assert.equal(watch.status,200);const watchJs=await watch.text();assert.match(watchJs,/quote/);assert.match(watchJs,/marketWatchStatus/);
 const experience=await fetch(new URL('/experience.js',origin));assert.equal(experience.status,200);assert.match(await experience.text(),/civ:deposit-verified/);
 const image=await fetch(new URL('/og-invitation-v3.png',origin));assert.equal(image.status,200);assert.match(image.headers.get('content-type'),/image\/png/);const bytes=new Uint8Array(await image.arrayBuffer());assert.deepEqual([...bytes.slice(0,8)],[137,80,78,71,13,10,26,10]);
 for(const path of ['/api/me','/api/investor/onboarding','/api/investor/ledger']){
  const response=await fetch(new URL(path,origin));assert.equal(response.status,401,path);
+}
+const prices=await fetch(new URL('/api/markets',origin));const priceData=await prices.json();
+assert.ok(prices.status===200||prices.status===503);
+if(prices.status===200){
+ assert.equal(priceData.assets.length,7);
+ assert.equal(priceData.source,'CoinGecko');
+ assert.ok(priceData.assets.every(a=>Number.isFinite(a.priceUsd)&&a.priceUsd>0));
+}else{
+ assert.ok(['PROVIDER_NOT_CONFIGURED','MARKET_REFRESHING','MARKET_RETRY_LATER','PROVIDER_RATE_LIMITED','PROVIDER_AUTH_FAILED','MARKET_DATA_UNAVAILABLE'].includes(priceData.code));
 }
 const payments=await json('/api/payments/config');
 assert.equal(payments.mode,'production');
@@ -39,4 +49,4 @@ assert.equal(ready.liveDepositsEnabled,false);
 const preflight=await fetch(new URL('/api/payments/preflight',origin));assert.equal(preflight.status,401,'Mainnet diagnostics must be private');
 const anonymousQuote=await fetch(new URL('/api/payments/quotes',origin),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:'USDC',amount:100,sender:'0x'+'1'.repeat(40)})});assert.equal(anonymousQuote.status,401,'Anonymous users cannot create mainnet quotes');
 const celo=await json('/api/celo/config');assert.equal(celo.liveDepositsEnabled,false);assert.equal(celo.livePayoutsEnabled,false);
-console.log('CIV production checks passed: schema 12, signup and referral HTML, PNG preview, private API boundaries, pilot-only production deposits, public collection disabled, trading and withdrawals off.');
+console.log('CIV production checks passed: schema 13, signup and referral HTML, PNG preview, private API boundaries, pilot-only production deposits, public collection disabled, trading and withdrawals off.');
