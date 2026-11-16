@@ -32,38 +32,58 @@ def draw_mark(image, x, y, width, color=(241,246,241), accent=(181,242,105)):
     a,b=pt((114,55));r=3.5*scale;pen.ellipse((a-r,b-r,a+r,b+r),fill=color)
     a,b=pt((69,12));r=5.5*scale;pen.ellipse((a-r,b-r,a+r,b+r),fill=accent)
 
-# Exact brand typography and geometry; versioned URL avoids stale social previews.
-import math
-im=Image.new("RGB",(1200,630),(10,17,15))
-d=ImageDraw.Draw(im)
-for r in range(700,0,-4):
-    t=1-r/700
-    col=(int(10+9*t),int(17+20*t),int(15+5*t))
-    d.ellipse((1050-r,280-r,1050+r,280+r),fill=col)
-d.rounded_rectangle((48,44,1152,586),radius=25,outline=(49,66,53),width=1)
-draw_mark(im,82,68,98)
-d.text((205,83),"CRYPTO INVESTMENT VAULT",font=font(15,True),fill=(194,210,198))
-d.text((83,192),"THE BIG 7 / YOUR INVITATION",font=font(15,True),fill=(181,242,105))
-d.text((77,239),"Seven assets.",font=font(65,True),fill=(242,247,243))
-d.text((77,313),"Your own vault.",font=font(65,True),fill=(181,242,105))
-d.text((83,410),"A clearer view of crypto starts here.",font=font(22),fill=(172,192,178))
-d.rounded_rectangle((82,484,398,539),radius=13,fill=(181,242,105))
-d.text((105,501),"CREATE YOUR ACCOUNT  →",font=font(16,True),fill=(12,26,16))
-# An asset orbit, not a chart or a claim about performance.
-cx,cy=942,304
-for r in (93,151): d.ellipse((cx-r,cy-r,cx+r,cy+r),outline=(59,82,57),width=1)
-d.rounded_rectangle((cx-54,cy-37,cx+54,cy+37),radius=18,fill=(15,28,20),outline=(82,116,70),width=1)
-draw_mark(im,cx-35,cy-15,70)
-for i,label in enumerate(("BTC","ETH","SOL","XRP","BNB","ADA","DOGE")):
-    angle=-math.pi/2+i*2*math.pi/7
-    x,y=cx+151*math.cos(angle),cy+151*math.sin(angle)
-    d.ellipse((x-31,y-31,x+31,y+31),fill=(19,31,23),outline=(83,110,73),width=1)
-    f=font(13,True);box=d.textbbox((0,0),label,font=f)
-    d.text((x-(box[2]-box[0])/2,y-8),label,font=f,fill=(207,227,198))
-d.text((710,529),"YOUR ACCOUNT. YOUR PERSPECTIVE.",font=font(13,True),fill=(157,180,159))
-im.save(P/"og-invitation-v1.png",optimize=True)
-im.save(P/"og-invitation-v2.png",optimize=True)
-im.save(P/"og-image.png",optimize=True)
+# True seven-asset icon artwork is checked into the repository as CC0 SVGs.
+# We convert SVG at build time rather than inventing token glyphs or fetching from a CDN.
+import io
+import cairosvg
+assets=("btc","eth","sol","xrp","bnb","ada","doge")
+def crypto_icon(symbol,size):
+    svg=P/"assets"/"coins"/f"{symbol}.svg"
+    assert svg.exists(),f"Missing verified SVG: {svg}"
+    png=cairosvg.svg2png(bytestring=svg.read_bytes(),output_width=size*2,output_height=size*2)
+    return Image.open(io.BytesIO(png)).convert("RGBA").resize((size,size),Image.Resampling.LANCZOS)
+def rounded_text(draw,xy,message,size,fill,bold=False):
+    draw.text(xy,message,font=font(size,bold),fill=fill)
+def build_og(invitation=False):
+    image=Image.new("RGB",(1200,630),(10,17,15))
+    d=ImageDraw.Draw(image)
+    for radius in range(730,0,-6):
+        t=1-radius/730
+        c=(int(10+9*t),int(17+20*t),int(15+8*t))
+        d.ellipse((1020-radius,310-radius,1020+radius,310+radius),fill=c)
+    d.rounded_rectangle((39,38,1161,592),radius=28,outline=(48,77,54),width=2)
+    d.ellipse((809,132,1127,450),outline=(63,119,59),width=2)
+    d.ellipse((772,92,1164,489),outline=(44,85,56),width=2)
+    draw_mark(image,75,73,110)
+    rounded_text(d,(200,88),"CRYPTO INVESTMENT",18,(216,227,215),True)
+    rounded_text(d,(200,117),"VAULT",17,(181,242,105),True)
+    rounded_text(d,(77,201),"THE BIG 7 / CRYPTO INVESTMENT VAULT",15,(181,242,105),True)
+    if invitation:
+        rounded_text(d,(70,249),"Your invitation.",59,(245,248,244),True)
+        rounded_text(d,(70,326),"Seven assets.",59,(181,242,105),True)
+        rounded_text(d,(76,418),"Join CIV. Explore the crypto markets.",21,(180,201,181))
+    else:
+        rounded_text(d,(70,249),"Seven assets.",62,(245,248,244),True)
+        rounded_text(d,(70,327),"One perspective.",58,(181,242,105),True)
+        rounded_text(d,(76,419),"Explore markets. Understand risk.",22,(180,201,181))
+    d.rounded_rectangle((76,496,346,555),radius=18,fill=(181,242,105))
+    rounded_text(d,(100,515),"EXPLORE CIV",19,(13,29,18),True)
+    cx,cy=970,294
+    d.ellipse((cx-63,cy-63,cx+63,cy+63),fill=(21,47,27),outline=(140,213,102),width=3)
+    draw_mark(image,cx-35,cy-14,70)
+    positions=[(cx-18,cy-183),(cx+122,cy-137),(cx+180,cy+15),(cx+95,cy+158),(cx-67,cy+176),(cx-176,cy+60),(cx-152,cy-108)]
+    for symbol,(x,y) in zip(assets,positions):
+        radius=41
+        d.ellipse((x-radius-6,y-radius-6,x+radius+6,y+radius+6),fill=(9,17,14),outline=(57,86,61),width=2)
+        icon=crypto_icon(symbol,76)
+        image.paste(icon,(int(x-38),int(y-38)),icon)
+    rounded_text(d,(760,550),"BTC · ETH · SOL · XRP · BNB · ADA · DOGE",15,(192,215,185),True)
+    return image
+build_og(invitation=False).save(P/"og-image.png",optimize=True)
+invitation=build_og(invitation=True)
+invitation.save(P/"og-invitation-v3.png",optimize=True)
+# Keep legacy social image URL available while caches transition.
+invitation.save(P/"og-invitation-v2.png",optimize=True)
 for size in (32,180,192,512):
     # Supersample the same geometric mark for crisp 32px browser icons.
     large=max(640,size*3)
