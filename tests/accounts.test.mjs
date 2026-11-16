@@ -28,12 +28,12 @@ async function call(path,{body,cookie,method='GET',headers={},address}={}){
  const r=await mf.dispatchFetch(origin+path,{method,headers:{'cf-connecting-ip':address||`192.0.2.${ip++}`,...(body?{'Content-Type':'application/json'}:{}),...(cookie?{Cookie:cookie}:{}),...headers},...(body?{body:JSON.stringify(body)}:{})});
  const raw=await r.text();if(!raw.startsWith('{'))throw Error(raw);const data=JSON.parse(raw);return {r,data,cookie:r.headers.get('set-cookie')?.split(';')[0]};
 }
-const payload=(email,referral=null)=>({email,password:'a long unique passphrase 123',name:'Brandon Nkabinde',acceptTerms:true,referral});
+const payload=(email,referral=null)=>({email,password:'a long unique passphrase 123',name:'CIV Test Member',acceptTerms:true,referral});
 test('registration is atomic and creates a durable welcome event plus referral attribution',async()=>{
  const created=await call('/api/auth/register',{method:'POST',body:payload('First@Example.com')});
  assert.equal(created.r.status,201);assert.equal(created.data.user.email,'first@example.com');assert.equal(created.data.welcomeEmail,'awaiting_provider');
  assert.match(created.r.headers.get('set-cookie'),/HttpOnly/);assert.match(created.r.headers.get('set-cookie'),/Secure/);assert.match(created.r.headers.get('set-cookie'),/SameSite=Strict/);
- const profile=await db.prepare('SELECT * FROM account_profiles WHERE user_id=?').bind(created.data.user.id).first();assert.equal(profile.display_name,'Brandon Nkabinde');
+ const profile=await db.prepare('SELECT * FROM account_profiles WHERE user_id=?').bind(created.data.user.id).first();assert.equal(profile.display_name,'CIV Test Member');
  const attribution=await db.prepare('SELECT code FROM referral_attributions WHERE user_id=?').bind(created.data.user.id).first();assert.equal(attribution,null);
  const queue=await db.prepare('SELECT status,attempts FROM email_outbox WHERE user_id=?').bind(created.data.user.id).first();assert.deepEqual(queue,{status:'pending',attempts:0});
  const overview=await call('/api/investor/overview',{cookie:created.cookie});assert.equal(overview.data.user.id,created.data.user.id);assert.equal(overview.data.portfolio.cashUsdt,0);
@@ -138,7 +138,7 @@ test('stablecoin deposits activate membership, preserve token balances and isola
  const built=await build({entryPoints:['src/payments.ts'],bundle:true,write:false,format:'esm',platform:'node'});
  const p=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
  const sender='0x'+'1'.repeat(40),treasury='0x'+'2'.repeat(40),blockHash='0x'+'b'.repeat(64);
- const env={DB:db,PAYMENTS_ENABLED:'true',PAYMENT_MODE:'production',CELO_MAINNET_RPC_URL:'https://rpc.example',CELO_MAINNET_TREASURY_ADDRESS:treasury,CELO_SEPOLIA_RPC_URL:'https://test-rpc.example',CELO_TEST_TREASURY_ADDRESS:treasury};
+ const env={DB:db,PAYMENTS_ENABLED:'true',PAYMENT_MODE:'production',CELO_MAINNET_RPC_URL:'https://rpc.example',CELO_MAINNET_TREASURY_ADDRESS:treasury,CELO_SEPOLIA_RPC_URL:'https://test-rpc.example',CELO_TEST_TREASURY_ADDRESS:treasury,CELO_TEST_USDC_ADDRESS:'0x2F25deB3848C207fc8E0c34035B3Ba7fC157602B'};
  assert.equal(p.paymentConfig({...env,PAYMENTS_ENABLED:'false'}).ready,false);assert.equal(p.paymentConfig({...env,CELO_MAINNET_TREASURY_ADDRESS:'0x'+'0'.repeat(40)}).ready,false);assert.deepEqual(p.paymentConfig(env).depositPresets,[100,200]);assert.equal(p.paymentConfig(env).platformToken,false);
  const owner=await call('/api/auth/register',{method:'POST',body:payload('funding-owner@example.com')});
  const other=await call('/api/auth/register',{method:'POST',body:payload('funding-other@example.com',owner.data.user.id)});
@@ -166,7 +166,18 @@ test('stablecoin deposits activate membership, preserve token balances and isola
   const second=await p.createQuote(env,other.data.user.id,'USDC',sender,200);const secondQ=await stored(second);assert.equal((await p.verifyQuote(env,secondQ,hash)).status,'mismatch');
   assert.equal((await call('/api/payments/quotes/'+first.id+'/verify',{method:'POST',cookie:other.cookie,body:{txHash:hash}})).r.status,404);
   q=secondQ;hash='0x'+'c'.repeat(64);late=true;assert.equal((await p.verifyQuote(env,q,hash)).status,'review');assert.equal((await onboard(other)).activated,false);late=false;
-  chain=11142220;const test=await p.createQuote({...env,PAYMENT_MODE:'testnet'},other.data.user.id,'USDC',sender,100);q=await stored(test);assert.equal((await p.verifyQuote(env,q,hash)).status,'verified_test');assert.equal((await onboard(other)).activated,false);assert.equal((await onboard(owner)).referralWallet.amountMinor,0);
+  chain=11142220;
+  const testEnv={...env,PAYMENT_MODE:'testnet'};
+  assert.deepEqual(p.paymentConfig(testEnv).depositPresets,[1,2]);
+  assert.equal(p.paymentConfig(testEnv).liveDepositsEnabled,false);
+  await assert.rejects(p.createQuote(testEnv,other.data.user.id,'USDC',sender,100),/supported deposit amount/);
+  await assert.rejects(p.createQuote({...testEnv,CELO_TEST_USDC_ADDRESS:'0x'+'1'.repeat(40)},other.data.user.id,'USDC',sender,1),/token configuration/);
+  const test=await p.createQuote(testEnv,other.data.user.id,'USDC',sender,1);
+  q=await stored(test);assert.equal(test.tokenMinor,'1000000');assert.equal(q.token,p.testUSDC);
+  assert.equal((await p.verifyQuote(env,q,hash)).status,'verified_test');
+  assert.equal((await onboard(other)).activated,false);
+  assert.deepEqual((await onboard(other)).balances,[]);
+  assert.equal((await onboard(owner)).referralWallet.amountMinor,0);
   chain=42220;hash='0x'+'d'.repeat(64);const recovery=await p.createQuote(env,other.data.user.id,'USDT',sender,100);q=await stored(recovery);await p.reconcilePayments(env);assert.equal((await stored(recovery)).status,'verified');assert.equal((await onboard(other)).activated,true);assert.equal((await onboard(owner)).referral.qualified,1);assert.equal((await onboard(owner)).referralWallet.amountMinor,100000);await p.verifyQuote(env,await stored(recovery),hash);assert.equal((await onboard(owner)).referralWallet.amountMinor,100000);
   hash='0x'+'e'.repeat(64);const repeat=await p.createQuote(env,owner.data.user.id,'USDC',sender,200);q=await stored(repeat);assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');state=await onboard(owner);assert.equal(state.balances.find(b=>b.asset==='USDT').amountMinor,100000000);assert.equal(state.balances.find(b=>b.asset==='USDC').amountMinor,200000000);assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM deposit_promotions WHERE user_id=?').bind(owner.data.user.id).first()).n,1);
   const ledger=(await call('/api/investor/ledger',{cookie:owner.cookie})).data;assert.equal(ledger.balanceUsdc,200);assert.equal(ledger.balanceUsdt,100);
