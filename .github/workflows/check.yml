@@ -18,6 +18,11 @@ jobs:
       - run: npm run check
       - name: Bundle Worker locally without hosting access
         run: node --input-type=module -e "const {build}=await import('esbuild');const r=await build({entryPoints:['src/index.ts'],bundle:true,write:false,format:'esm',platform:'node',external:['node:crypto']});console.log('Worker bundle bytes:',r.outputFiles[0].contents.length)"
+      - name: Render actual Big 7 icons into Open Graph preview
+        run: |
+          python -m pip install --disable-pip-version-check Pillow==11.3.0 CairoSVG==2.9.1
+          python scripts/generate_brand_assets.py
+          python -c "from PIL import Image; x=Image.open('public/og-invitation-v3.png'); assert x.size==(1200,630); assert x.format=='PNG'"
       - name: Install browser for mobile checks
         run: npx playwright install --with-deps chromium
       - name: Check mobile funding and membership navigation
