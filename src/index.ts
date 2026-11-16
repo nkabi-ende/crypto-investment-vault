@@ -373,9 +373,10 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT user_id,status FROM deposit_promotions LIMIT 0'),
   c.env.DB.prepare('SELECT code,user_id FROM referral_aliases LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,status FROM referral_wallet LIMIT 0'),
-  c.env.DB.prepare('SELECT user_id,status FROM manual_deposit_claims LIMIT 0')
+  c.env.DB.prepare('SELECT user_id,status FROM manual_deposit_claims LIMIT 0'),
+  c.env.DB.prepare('SELECT cache_key,response_json,updated_at_ms FROM market_data_cache LIMIT 0')
  ]);
- return c.json({ready:true,schema:12,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:13,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
