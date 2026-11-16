@@ -78,7 +78,7 @@ test('readiness validates required schema, and payment rails remain correctly di
 
 test('invitation HTML has server-rendered OpenGraph metadata and invalid links do not load signup',async()=>{
  const made=await call('/api/auth/register',{method:'POST',body:payload('social-member@example.com')});
- const response=await mf.dispatchFetch(origin+'/r/'+made.data.user.id);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('property="og:url" content="'+origin+'/r/'+made.data.user.id+'"'));assert.match(html,/og-invitation-v1.png/);assert.match(html,/id="authForm"/);assert.match(html,/Minimum deposit: 100 USDC or USDT/);assert.doesNotMatch(html,/kzn-ai|KZN AI Solutions/i);
+ const response=await mf.dispatchFetch(origin+'/r/'+made.data.user.id);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('property="og:url" content="'+origin+'/r/'+made.data.user.id+'"'));assert.match(html,/og-invitation-v2.png/);assert.match(html,/id="authForm"/);assert.match(html,/Minimum deposit: 100 USDC or USDT/);assert.doesNotMatch(html,/kzn-ai|KZN AI Solutions/i);
  const retired=await mf.dispatchFetch(origin+'/r/kzn-ai');assert.equal(retired.status,404);await retired.text();
  const bad=await mf.dispatchFetch(origin+'/r/unknown-invitation');assert.equal(bad.status,404);await bad.text();
  const dashboard=await mf.dispatchFetch(origin+'/dashboard');assert.match(await dashboard.text(),/noindex,nofollow/);
