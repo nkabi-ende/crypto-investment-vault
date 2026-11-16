@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 const origin=process.env.CIV_ORIGIN||'https://cryptoinvestmentvault.com';
 async function json(path){const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);return r.json()}
-const status=await json('/api/status');assert.equal(status.release,'stablecoin-funding-v4');assert.equal(status.fundingEnabled,false);assert.equal(status.liveTradingEnabled,false);
+const status=await json('/api/status');assert.equal(status.release,'stablecoin-funding-v4');assert.equal(status.fundingEnabled,false);assert.equal(status.liveTradingEnabled,false);assert.equal(status.membershipDepositsEnabled,false);assert.equal(status.pilotOnly,true);
 const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,12);
 for(const path of ['/join']){
  const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes('id="authForm"'));assert.ok(html.includes('id="vaultLoader"'));assert.ok(html.includes('class="site-footer"'));assert.ok(html.includes('/civ-mark.svg'));assert.ok(html.includes('og-invitation-v3.png'));assert.ok(html.includes(`property="og:url" content="${origin}${path}"`));
@@ -27,6 +27,16 @@ const image=await fetch(new URL('/og-invitation-v3.png',origin));assert.equal(im
 for(const path of ['/api/me','/api/investor/onboarding','/api/investor/ledger']){
  const response=await fetch(new URL(path,origin));assert.equal(response.status,401,path);
 }
-const payments=await json('/api/payments/config');assert.equal(payments.mode,'testnet');assert.equal(payments.ready,false);assert.equal(payments.liveDepositsEnabled,false);assert.equal(payments.chainId,11142220);assert.deepEqual(payments.supportedTokens,['USDC']);assert.deepEqual(payments.depositPresets,[1,2]);assert.equal(ready.liveDepositsEnabled,false);
+const payments=await json('/api/payments/config');
+assert.equal(payments.mode,'production');
+assert.equal(payments.pilotOnly,true);
+assert.equal(payments.ready,false,'Anonymous members must never see pilot checkout enabled');
+assert.equal(payments.liveDepositsEnabled,false,'Anonymous members must never collect deposits');
+assert.equal(payments.chainId,42220);
+assert.deepEqual(payments.supportedTokens,['USDT','USDC']);
+assert.deepEqual(payments.depositPresets,[100,200]);
+assert.equal(ready.liveDepositsEnabled,false);
+const preflight=await fetch(new URL('/api/payments/preflight',origin));assert.equal(preflight.status,401,'Mainnet diagnostics must be private');
+const anonymousQuote=await fetch(new URL('/api/payments/quotes',origin),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:'USDC',amount:100,sender:'0x'+'1'.repeat(40)})});assert.equal(anonymousQuote.status,401,'Anonymous users cannot create mainnet quotes');
 const celo=await json('/api/celo/config');assert.equal(celo.liveDepositsEnabled,false);assert.equal(celo.livePayoutsEnabled,false);
-console.log('CIV production checks passed: schema 12, signup and referral HTML, PNG preview, private API boundaries, disabled live rails.');
+console.log('CIV production checks passed: schema 12, signup and referral HTML, PNG preview, private API boundaries, pilot-only production deposits, public collection disabled, trading and withdrawals off.');
