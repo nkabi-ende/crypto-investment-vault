@@ -3,9 +3,10 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deliverEmails } from './email';
 import { membership } from './membership';
+import { marketPulse,cryptoHeadlines } from './market-intelligence';
 import { paymentConfig,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-type Bindings = PaymentEnv & { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
+type Bindings = PaymentEnv & { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
 const app = new Hono<{Bindings:Bindings}>();
 app.onError((error,c)=>{console.error('CIV request failed',c.req.path,error instanceof Error ? error.name : 'UnknownError');return c.json({error:'Account service temporarily unavailable. Please try again.'},503)});
 app.use('/api/*',bodyLimit({maxSize:16384,onError:c=>c.json({error:'Request too large'},413)}));
@@ -149,6 +150,7 @@ app.post('/api/payments/quotes',async c=>{
  const body=await c.req.json().catch(()=>null);
  const config=paymentConfig(c.env);
  if(!config.supportedTokens.includes(body?.symbol)||typeof body?.sender!=='string'||!config.depositPresets.includes(body?.amount))return c.json({error:'Choose a supported token and amount for the selected network'},400);
+ if(config.treasury&&body.sender.toLowerCase()===config.treasury)return c.json({error:'This MiniPay wallet is set as CIV’s receiving wallet. Use a separate paying wallet for the deposit.',code:'RECEIVING_WALLET_CANNOT_PAY_ITSELF'},409);
  try{return c.json(await createQuote(c.env,user.id,body.symbol,body.sender,body.amount),201)}catch(error){console.error('Quote unavailable',error instanceof Error?error.message:'error');return c.json({error:'Payment quote unavailable. Check payment setup or try again shortly.'},503)}
 });
 app.post('/api/payments/quotes/:id/verify',async c=>{
@@ -320,6 +322,9 @@ app.get('/api/celo/testnet/intents',async c=>{
 });
 app.get('/api/celo/payout-signer/status',c=>c.json({mode:'disabled',mainnetSigningEnabled:false,testnetSigningEnabled:false,reason:'Signer must be isolated in a separate, authenticated treasury service with dual approval and hardware-backed keys. No signing key is stored in the public web worker.'}));
 const coinMap=[['bitcoin','BTC','Bitcoin'],['ethereum','ETH','Ethereum'],['solana','SOL','Solana'],['ripple','XRP','XRP'],['binancecoin','BNB','BNB'],['cardano','ADA','Cardano'],['dogecoin','DOGE','Dogecoin']] as const;
+// Server-side market summaries are independent of the payment and investment ledgers.
+app.get('/api/market-pulse',c=>marketPulse(c.env,c.req.raw,c.executionCtx));
+app.get('/api/headlines',c=>cryptoHeadlines(c.env,c.req.raw,c.executionCtx));
 app.get('/api/markets',async c=>{
   const key=c.env.COINGECKO_DEMO_API_KEY;
   if(!key)return c.json({error:'CoinGecko market data is not configured',code:'PROVIDER_NOT_CONFIGURED'},503);
