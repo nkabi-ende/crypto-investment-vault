@@ -20,7 +20,7 @@ export async function marketPrices(env:MarketEnv):Promise<Response>{
  if(saved&&!saved.stale)return json(saved);
  const apiKey=env.COINGECKO_DEMO_API_KEY?.trim();
  if(!apiKey)return saved?json({...saved,stale:true,warning:'API key missing; showing previous verified CoinGecko snapshot.'}):json({error:'CoinGecko API key must be configured in Cloudflare',code:'PROVIDER_NOT_CONFIGURED'},503);
- if(stored?.next_attempt_ms>now)return saved?json({...saved,stale:true,warning:'Provider temporarily unavailable; showing last known price snapshot.'}):json({error:'Price provider temporarily unavailable',code:'MARKET_RETRY_LATER'},503,30);
+ if(stored&&stored.next_attempt_ms>now)return saved?json({...saved,stale:true,warning:'Provider temporarily unavailable; showing last known price snapshot.'}):json({error:'Price provider temporarily unavailable',code:'MARKET_RETRY_LATER'},503,30);
  const claim=await env.DB.prepare('UPDATE market_data_cache SET lease_until_ms=? WHERE cache_key=? AND lease_until_ms<? AND next_attempt_ms<=? AND updated_at_ms<?')
    .bind(now+12000,key,now,now,now-refreshMs).run();
  if(claim.meta.changes!==1)return saved?json({...saved,stale:true,warning:'Refreshing prices; showing last known snapshot.'}):json({error:'Prices are currently refreshing',code:'MARKET_REFRESHING'},503,5);
