@@ -21,6 +21,6 @@ const image=await fetch(new URL('/og-invitation-v2.png',origin));assert.equal(im
 for(const path of ['/api/me','/api/investor/onboarding','/api/investor/ledger']){
  const response=await fetch(new URL(path,origin));assert.equal(response.status,401,path);
 }
-const payments=await json('/api/payments/config');assert.equal(payments.liveDepositsEnabled,payments.ready&&payments.mode==='production');if(payments.liveDepositsEnabled){assert.equal(payments.chainId,42220);assert.deepEqual(payments.supportedTokens,['USDT','USDC'])}
+const payments=await json('/api/payments/config');assert.equal(payments.mode,'testnet');assert.equal(payments.ready,false);assert.equal(payments.liveDepositsEnabled,false);assert.equal(payments.chainId,11142220);assert.deepEqual(payments.supportedTokens,['USDC']);assert.deepEqual(payments.depositPresets,[1,2]);assert.equal(ready.liveDepositsEnabled,false);
 const celo=await json('/api/celo/config');assert.equal(celo.liveDepositsEnabled,false);assert.equal(celo.livePayoutsEnabled,false);
 console.log('CIV production checks passed: schema 12, signup and referral HTML, PNG preview, private API boundaries, disabled live rails.');
