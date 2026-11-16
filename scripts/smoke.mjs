@@ -17,7 +17,13 @@ for(const path of ['/legal/terms.html','/legal/privacy.html','/legal/risk.html']
  assert.doesNotMatch(html, /@gmail[.]com/i,path);
 }
 const retired=await fetch(new URL('/r/kzn-ai',origin));assert.equal(retired.status,404);await retired.text();
-const image=await fetch(new URL('/og-invitation-v2.png',origin));assert.equal(image.status,200);assert.match(image.headers.get('content-type'),/image\/png/);const bytes=new Uint8Array(await image.arrayBuffer());assert.deepEqual([...bytes.slice(0,8)],[137,80,78,71,13,10,26,10]);
+for(const asset of ['btc','eth','sol','xrp','bnb','ada','doge']){
+ const r=await fetch(new URL('/assets/coins/'+asset+'.svg',origin),{signal:AbortSignal.timeout(15000)});
+ assert.equal(r.status,200,'Missing verified coin artwork: '+asset);
+ assert.match(r.headers.get('content-type'),/image\\/svg\\+xml/);
+}
+const experience=await fetch(new URL('/experience.js',origin));assert.equal(experience.status,200);assert.match(await experience.text(),/civ:deposit-verified/);
+const image=await fetch(new URL('/og-invitation-v3.png',origin));assert.equal(image.status,200);assert.match(image.headers.get('content-type'),/image\/png/);const bytes=new Uint8Array(await image.arrayBuffer());assert.deepEqual([...bytes.slice(0,8)],[137,80,78,71,13,10,26,10]);
 for(const path of ['/api/me','/api/investor/onboarding','/api/investor/ledger']){
  const response=await fetch(new URL(path,origin));assert.equal(response.status,401,path);
 }
