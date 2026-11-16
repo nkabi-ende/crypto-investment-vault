@@ -12,7 +12,7 @@ const id='00000000-0000-4000-8000-000000000001';
 const server=createServer(async(req,res)=>{
  const path=new URL(req.url,'http://localhost').pathname;res.setHeader('Content-Type',path.startsWith('/api/')?'application/json':'text/html');
  const reply=d=>res.end(JSON.stringify(d));
- if(/^\/(civ-mark|favicon)\.svg$/.test(path)){res.setHeader('Content-Type','image/svg+xml');return res.end(await readFile('public'+path))}if(!path.startsWith('/api/'))return res.end(html);
+ if(/^\/(civ-mark|favicon)\.svg$/.test(path)||/^\/assets\/coins\/(btc|eth|sol|xrp|bnb|ada|doge)\.svg$/.test(path)){res.setHeader('Content-Type','image/svg+xml');return res.end(await readFile('public'+path))}if(path==='/experience.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public/experience.js'))}if(!path.startsWith('/api/'))return res.end(html);
  if(path==='/api/investor/overview')await new Promise(resolve=>setTimeout(resolve,650));
  if(path==='/api/auth/register'||path==='/api/auth/login'){res.setHeader('Set-Cookie','ui_member=1; Path=/; HttpOnly; SameSite=Lax');return reply({user:{id,email:'preview@example.invalid'}})}
  if(path==='/api/me'){if(req.headers['x-ui-auth']==='0'&&!String(req.headers.cookie||'').includes('ui_member=1')){res.statusCode=401;return reply({error:'Unauthorized'})}return reply({user:{id,email:'preview@example.invalid'}})}
@@ -30,6 +30,8 @@ const server=createServer(async(req,res)=>{
  if(path==='/api/investor/preferences')return reply({preference:null});
  if(path==='/api/celo/config')return reply({ready:false,mode:'testnet_only'});
  if(path==='/api/celo/testnet/intents')return reply({testUsdcMinor:0,intents:[]});
+ if(path==='/api/market-pulse')return reply({source:'CoinGecko',asOf:new Date().toISOString(),global:{marketCapUsd:3000000000000,volume24hUsd:120000000000,btcDominancePct:55.2,marketCapChange24hPct:1.5},trending:[{id:'bitcoin',name:'Bitcoin',symbol:'BTC',url:'https://www.coingecko.com/en/coins/bitcoin',change24hPct:1.5}]});
+ if(path==='/api/headlines')return reply({source:'CryptoPanic',asOf:new Date().toISOString(),articles:[{title:'Test publisher headline - example only',url:'https://example.com/crypto-article',source:'Example Publisher',publishedAt:new Date().toISOString()}]});
  if(path==='/api/transparency')return reply({asOf:new Date().toISOString(),categories:[],verifiedPerformance:[],announcements:[]});
  if(path==='/api/markets')return reply({asOf:new Date().toISOString(),assets:[]});
  res.statusCode=404;return reply({error:'Not found'});
@@ -44,8 +46,15 @@ try{
   await page.addInitScript(()=>{window.ethereum={isMiniPay:true,request:async({method})=>{if(method==='eth_chainId')return '0xa4ec';if(method==='eth_accounts')return ['0x'+'1'.repeat(40)];if(method==='eth_call')return '0x3b9aca00';throw Error('Unexpected wallet request: '+method)}}});
   await page.goto(origin+'/dashboard');if(width===390){await page.locator('#vaultLoader').waitFor({state:'visible'});await page.screenshot({path:'artifacts/ui/mobile-loader.png'});}await page.locator('#vaultLoader').waitFor({state:'hidden'});assert.equal(await page.locator('.nav .brand-mark').evaluate(img=>img.complete&&img.naturalWidth>0),true);await expect(page.locator('#fundingMembershipStatus')).toHaveText('Awaiting deposit');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'Home horizontal overflow at '+width);
+  await expect(page.locator('#marketPulseGrid')).toContainText('Total crypto market cap');
+  await expect(page.locator('#cryptoHeadlines')).toContainText('Test publisher headline');
+  for(const icon of ['btc','eth','sol','xrp','bnb','ada','doge'])assert.equal(await page.locator('.orbit-scene img[src="/assets/coins/'+icon+'.svg"]').first().evaluate(img=>img.complete&&img.naturalWidth>0),true,'Missing source-backed hero icon: '+icon);
   if(width===390)await page.screenshot({path:'artifacts/ui/mobile-home.png'});
-  await page.locator('[data-vault-tab="deposits"]').click();await expect(page.locator('#signupQuote')).toHaveText('Continue with MiniPay');
+  await page.locator('[data-vault-tab="deposits"]').click();
+  await expect(page.locator('#civDepositGuide')).toBeVisible();await expect(page.locator('#civGuideTitle')).toContainText('Prepare a paying wallet');
+  await page.locator('#civGuideSkip').click();
+  await expect(page.locator('#civDepositGuide')).not.toBeVisible();
+  await expect(page.locator('#signupQuote')).toHaveText('Continue with MiniPay');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'Deposit horizontal overflow at '+width);
   if(width<=700){const nav=await page.locator('.vault-nav').boundingBox();assert.ok(nav.y+nav.height<=844&&nav.y>650);assert.equal(await page.locator('.vault-nav button').count(),5)}
   await page.locator('[data-deposit-amount="200"]').click();await page.locator('#signupQuote').click();await expect(page.locator('#paymentQuoteSummary')).toContainText('200.000000 USDC');assert.equal(lastQuoteBody.amount,200);assert.equal(lastQuoteBody.symbol,'USDC');
@@ -64,6 +73,7 @@ try{
  await sandboxPage.goto(origin+'/dashboard');
  await sandboxPage.locator('#vaultLoader').waitFor({state:'hidden'});
  await sandboxPage.locator('[data-vault-tab="deposits"]').click();
+ await expect(sandboxPage.locator('#civDepositGuide')).toBeVisible();await sandboxPage.locator('#civGuideSkip').click();
  await expect(sandboxPage.locator('#depositAmountHeadline')).toContainText('Test with 1 or 2 USDC');
  await expect(sandboxPage.locator('[data-deposit-amount="1"]')).toContainText('TEST USDC');
  await expect(sandboxPage.locator('#collectionHelp')).toContainText('real deposits remain disabled');
@@ -80,6 +90,7 @@ try{
  await disabledPage.goto(origin+'/dashboard');
  await disabledPage.locator('#vaultLoader').waitFor({state:'hidden'});
  await disabledPage.locator('[data-vault-tab="deposits"]').click();
+ await expect(disabledPage.locator('#civDepositGuide')).toBeVisible();await disabledPage.locator('#civGuideSkip').click();
  await expect(disabledPage.locator('#depositAmountHeadline')).toHaveText('Start with $100.');
  await expect(disabledPage.locator('[data-deposit-amount="100"]')).toContainText('$100');
  await expect(disabledPage.locator('[data-deposit-amount="200"]')).toContainText('$200');
