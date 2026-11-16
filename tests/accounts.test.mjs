@@ -159,6 +159,7 @@ test('stablecoin deposits activate membership, preserve token balances and isola
   const {method}=JSON.parse(options.body);let result;
   if(method==='eth_chainId')result='0x'+chain.toString(16);
   else if(method==='eth_call')result='0x6';
+  else if(method==='eth_getCode')result='0x60016000';
   else if(method==='eth_blockNumber')result='0x64';
   else if(method==='eth_getTransactionByHash')result={hash,from:sender,to:q.token,input:p.paymentData(q),value:'0x0'};
   else if(method==='eth_getTransactionReceipt')result={status:'0x1',blockNumber:'0x64',blockHash,logs:[{address:q.token,topics:['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef','0x'+sender.slice(2).padStart(64,'0'),'0x'+treasury.slice(2).padStart(64,'0')],data:'0x'+BigInt(q.token_minor+(wrongAmount?1:0)).toString(16)}]};
@@ -169,6 +170,7 @@ test('stablecoin deposits activate membership, preserve token balances and isola
  const stored=async quote=>db.prepare('SELECT * FROM payment_quotes WHERE id=?').bind(quote.id).first();
  const onboard=async account=>(await call('/api/investor/onboarding',{cookie:account.cookie})).data;
  try{
+  const health=await p.mainnetPreflight(env);assert.equal(health.ready,true);assert.equal(health.chainId,42220);assert.equal(health.usdc,true);assert.equal(health.usdt,true);assert.equal(health.feeAdaptersVerified,true);
   for(const amount of [0,50,99,101,500,'100'])await assert.rejects(createQuoteFor(owner.data.user.id,'USDT',sender,amount));
   const first=await createQuoteFor(owner.data.user.id,'USDT',sender,100);assert.equal(first.tokenMinor,'100000000');assert.equal(first.purpose,'funding');assert.equal(first.amount,100);q=await stored(first);assert.equal(q.expires_at-q.created_at,300000);assert.equal((await createQuoteFor(owner.data.user.id,'USDT',sender,100)).id,first.id);
   final=99;assert.equal((await p.verifyQuote(env,q,hash)).status,'pending');assert.equal((await onboard(owner)).activated,false);await assert.rejects(createQuoteFor(owner.data.user.id,'USDC',sender,200),/awaiting verification/);
