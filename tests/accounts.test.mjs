@@ -38,7 +38,7 @@ test('registration is atomic and creates a durable welcome event plus referral a
  const queue=await db.prepare('SELECT status,attempts FROM email_outbox WHERE user_id=?').bind(created.data.user.id).first();assert.deepEqual(queue,{status:'pending',attempts:0});
  const overview=await call('/api/investor/overview',{cookie:created.cookie});assert.equal(overview.data.user.id,created.data.user.id);assert.equal(overview.data.portfolio.cashUsdt,0);
  const ledger=await call('/api/investor/ledger',{cookie:created.cookie});assert.equal(ledger.r.status,200);assert.equal(ledger.data.balanceUsdt,0);
- const onboarding=await call('/api/investor/onboarding',{cookie:created.cookie});assert.equal(onboarding.data.referral.url,origin+'/r/'+created.data.user.id);assert.equal(onboarding.data.emailVerified,false);
+ const onboarding=await call('/api/investor/onboarding',{cookie:created.cookie});assert.match(onboarding.data.referral.code,/^[a-f0-9]{10}$/);assert.equal(onboarding.data.referral.url,origin+'/r/'+created.data.referral.code);assert.equal(onboarding.data.emailVerified,false);
  const ref=onboarding.data.referral.url.split('/').at(-1);
  const second=await call('/api/auth/register',{method:'POST',body:payload('second@example.com',ref)});assert.equal(second.r.status,201);
  const updated=await call('/api/investor/onboarding',{cookie:created.cookie});assert.equal(updated.data.referral.registrations,1);assert.equal(JSON.stringify(updated.data).includes('second@example.com'),false);
@@ -68,7 +68,7 @@ test('invalid attribution is ignored, expired sessions fail and members get a st
  await db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').bind(made.data.user.id).run();assert.equal((await call('/api/me',{cookie:made.cookie})).r.status,401);
 });
 test('readiness validates required schema, and payment rails remain correctly disabled',async()=>{
- const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,11);
+ const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,12);
  assert.equal((await call('/api/celo/config')).data.ready,false);
  const made=await call('/api/auth/register',{method:'POST',body:payload('payment@example.com')});
  assert.equal((await call('/api/celo/testnet/intents',{method:'POST',cookie:made.cookie,body:{amountUsd:100,sender:'0x'+'1'.repeat(40)}})).r.status,503);
@@ -78,7 +78,7 @@ test('readiness validates required schema, and payment rails remain correctly di
 
 test('invitation HTML has server-rendered OpenGraph metadata and invalid links do not load signup',async()=>{
  const made=await call('/api/auth/register',{method:'POST',body:payload('social-member@example.com')});
- const response=await mf.dispatchFetch(origin+'/r/'+made.data.user.id);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('property="og:url" content="'+origin+'/r/'+made.data.user.id+'"'));assert.match(html,/og-invitation-v2.png/);assert.match(html,/id="authForm"/);assert.match(html,/Minimum deposit: 100 USDC or USDT/);assert.doesNotMatch(html,/kzn-ai|KZN AI Solutions/i);
+ const legacy=await mf.dispatchFetch(origin+'/r/'+made.data.user.id,{redirect:'manual'});assert.equal(legacy.status,301);assert.equal(legacy.headers.get('location'),'/r/'+made.data.referral.code);await legacy.text();const response=await mf.dispatchFetch(made.data.referral.url);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('property="og:url" content="'+made.data.referral.url+'"'));assert.match(html,/og-invitation-v2.png/);assert.match(html,/id="authForm"/);assert.match(html,/Minimum deposit: 100 USDC or USDT/);assert.doesNotMatch(html,/kzn-ai|KZN AI Solutions/i);
  const retired=await mf.dispatchFetch(origin+'/r/kzn-ai');assert.equal(retired.status,404);await retired.text();
  const bad=await mf.dispatchFetch(origin+'/r/unknown-invitation');assert.equal(bad.status,404);await bad.text();
  const dashboard=await mf.dispatchFetch(origin+'/dashboard');assert.match(await dashboard.text(),/noindex,nofollow/);
@@ -114,7 +114,7 @@ test('migration removes campaign attribution, preserves member history and redir
  assert.equal(await db.prepare("SELECT * FROM referral_attributions WHERE user_id='00000000-0000-4000-8000-000000000003'").first(),null);
  const kept=await db.prepare("SELECT code FROM referral_attributions WHERE user_id='00000000-0000-4000-8000-000000000002'").first();assert.equal(kept.code,'00000000000040008000000000000001');
  assert.equal((await db.prepare("SELECT required_minor FROM signup_deposit_requirements WHERE user_id='00000000-0000-4000-8000-000000000003'").first()).required_minor,50000);
- const redirect=await mf.dispatchFetch(origin+'/r/00000000000040008000000000000001',{redirect:'manual'});assert.equal(redirect.status,301);assert.equal(redirect.headers.get('location'),'/r/00000000-0000-4000-8000-000000000001');await redirect.text();
+ const redirect=await mf.dispatchFetch(origin+'/r/00000000000040008000000000000001',{redirect:'manual'});assert.equal(redirect.status,301);assert.equal(redirect.headers.get('location'),'/r/'+(await db.prepare("SELECT code FROM referral_aliases WHERE user_id='00000000-0000-4000-8000-000000000001'").first()).code);await redirect.text();
  await assert.rejects(db.prepare("INSERT INTO referral_codes(code,label) VALUES('campaign','not a member')").run());
  await assert.rejects(db.prepare("INSERT INTO referral_attributions(user_id,code) VALUES('00000000-0000-4000-8000-000000000001','00000000000040008000000000000001')").run());
  await assert.rejects(db.prepare("UPDATE referral_attributions SET code=code").run());
@@ -131,7 +131,7 @@ test('browser invitation capture rejects campaign tags, expires old links and wo
  saved=JSON.stringify({code:'kzn-ai',at:Date.now()});assert.equal(evaluate('/'),null);assert.equal(saved,null);
  saved=JSON.stringify({code:id,at:Date.now()-31*86400000});assert.equal(evaluate('/'),null);
  const blocked={setItem(){throw Error('disabled')},getItem(){throw Error('disabled')}};assert.equal(evaluate('/r/'+id,'',blocked),id);
- assert.equal(evaluate('/join','?ref='+id),id);
+ assert.equal(evaluate('/join','?ref='+id),id);assert.equal(evaluate('/r/abcdef0123'),'abcdef0123');assert.equal(evaluate('/'),'abcdef0123');
 });
 
 test('stablecoin deposits activate membership, preserve token balances and isolate R500 promotion',async()=>{
@@ -166,14 +166,15 @@ test('stablecoin deposits activate membership, preserve token balances and isola
   const second=await p.createQuote(env,other.data.user.id,'USDC',sender,200);const secondQ=await stored(second);assert.equal((await p.verifyQuote(env,secondQ,hash)).status,'mismatch');
   assert.equal((await call('/api/payments/quotes/'+first.id+'/verify',{method:'POST',cookie:other.cookie,body:{txHash:hash}})).r.status,404);
   q=secondQ;hash='0x'+'c'.repeat(64);late=true;assert.equal((await p.verifyQuote(env,q,hash)).status,'review');assert.equal((await onboard(other)).activated,false);late=false;
-  chain=11142220;const test=await p.createQuote({...env,PAYMENT_MODE:'testnet'},other.data.user.id,'USDC',sender,100);q=await stored(test);assert.equal((await p.verifyQuote(env,q,hash)).status,'verified_test');assert.equal((await onboard(other)).activated,false);
-  chain=42220;hash='0x'+'d'.repeat(64);const recovery=await p.createQuote(env,other.data.user.id,'USDT',sender,100);q=await stored(recovery);await p.reconcilePayments(env);assert.equal((await stored(recovery)).status,'verified');assert.equal((await onboard(other)).activated,true);assert.equal((await onboard(owner)).referral.qualified,1);
+  chain=11142220;const test=await p.createQuote({...env,PAYMENT_MODE:'testnet'},other.data.user.id,'USDC',sender,100);q=await stored(test);assert.equal((await p.verifyQuote(env,q,hash)).status,'verified_test');assert.equal((await onboard(other)).activated,false);assert.equal((await onboard(owner)).referralWallet.amountMinor,0);
+  chain=42220;hash='0x'+'d'.repeat(64);const recovery=await p.createQuote(env,other.data.user.id,'USDT',sender,100);q=await stored(recovery);await p.reconcilePayments(env);assert.equal((await stored(recovery)).status,'verified');assert.equal((await onboard(other)).activated,true);assert.equal((await onboard(owner)).referral.qualified,1);assert.equal((await onboard(owner)).referralWallet.amountMinor,100000);await p.verifyQuote(env,await stored(recovery),hash);assert.equal((await onboard(owner)).referralWallet.amountMinor,100000);
   hash='0x'+'e'.repeat(64);const repeat=await p.createQuote(env,owner.data.user.id,'USDC',sender,200);q=await stored(repeat);assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');state=await onboard(owner);assert.equal(state.balances.find(b=>b.asset==='USDT').amountMinor,100000000);assert.equal(state.balances.find(b=>b.asset==='USDC').amountMinor,200000000);assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM deposit_promotions WHERE user_id=?').bind(owner.data.user.id).first()).n,1);
   const ledger=(await call('/api/investor/ledger',{cookie:owner.cookie})).data;assert.equal(ledger.balanceUsdc,200);assert.equal(ledger.balanceUsdt,100);
   hash='0x'+'f'.repeat(64);q=await stored(await p.createQuote(env,other.data.user.id,'USDC',sender,100));wrongAmount=true;assert.equal((await p.verifyQuote(env,q,hash)).status,'review');wrongAmount=false;
   await db.prepare('UPDATE funding_receipts SET refunded_minor=amount_minor WHERE user_id=?').bind(owner.data.user.id).run();state=await onboard(owner);assert.equal(state.activated,false);assert.equal(state.promotion.status,'ineligible');
   await assert.rejects(db.prepare('UPDATE funding_receipts SET user_id=? WHERE id=?').bind(other.data.user.id,first.id).run());
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM signup_deposits').first()).n,0,'No new ZAR activation payments');
+  await db.prepare('UPDATE funding_receipts SET refunded_minor=amount_minor WHERE user_id=?').bind(other.data.user.id).run();const refunded=await onboard(owner);assert.equal(refunded.referralWallet.amountMinor,0);assert.equal(refunded.referralWallet.suspendedMinor,100000);assert.equal(refunded.referralWallet.withdrawable,false);
   const privateHistory=(await call('/api/payments/quotes',{cookie:other.cookie})).data.quotes;assert.ok(!privateHistory.some(x=>x.id===first.id));
   assert.equal((await call('/api/payments/wallet')).r.status,401);assert.equal((await call('/api/payments/quotes')).r.status,401);
   assert.equal((await call('/api/payments/manual-claims',{method:'POST',cookie:owner.cookie,body:{asset:'USDC',txHash:hash}})).r.status,503);
