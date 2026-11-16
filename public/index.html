@@ -350,7 +350,7 @@ document.querySelectorAll('[data-vault-tab]').forEach(button=>{button.setAttribu
 let checkoutQuote=null,checkoutSender=null,checkoutConfig=null,checkoutBusy=false,selectedDepositAmount=100;
 async function refreshSignupPayments(){try{
  checkoutConfig=await request('/api/payments/config');
- const sandbox=checkoutConfig.mode==='testnet',presets=checkoutConfig.depositPresets||(sandbox?[1,2]:[100,200]);
+ const sandbox=checkoutConfig.mode==='testnet'&&checkoutConfig.ready,presets=sandbox?(checkoutConfig.depositPresets||[1,2]):[100,200];
  if(!presets.includes(selectedDepositAmount))selectedDepositAmount=presets[0];
  document.querySelectorAll('[data-deposit-amount]').forEach((button,index)=>{
   const amount=presets[index];if(amount===undefined)return;
@@ -366,61 +366,8 @@ async function refreshSignupPayments(){try{
  const wallet=await request('/api/payments/wallet');const insideMiniPay=!!window.ethereum?.isMiniPay;
  $('#externalWalletDetails').classList.toggle('hidden',!wallet.ready||insideMiniPay);if(wallet.address&&!insideMiniPay)$('#receivingWallet').value=wallet.address;
  $('#manualTransferStatus').textContent=insideMiniPay?'Use the verified MiniPay flow above.':wallet.ready?'Address transfers remain pending review until reconciled to your account.':'Receiving wallet awaiting configuration. Do not send funds yet.';
- const token=$('#paymentToken');for(const option of token.options)option.disabled=!checkoutConfig.supportedTokens.includes(option.value);
- if(!checkoutConfig.supportedTokens.includes(token.value))token.value=checkoutConfig.supportedTokens[0];
- $('#signupQuote').disabled=!checkoutConfig.ready||checkoutBusy;$('#signupQuote').textContent=checkoutConfig.ready?(checkoutConfig.mode==='production'?'Continue with MiniPay':'Test deposit with MiniPay'):'Receiving wallet pending';
- const history=await request('/api/payments/quotes');const parent=$('#signupPaymentHistory');parent.replaceChildren();if(!history.quotes.length)parent.textContent='No payment requests yet.';
- for(const q of history.quotes.slice(0,5)){const line=document.createElement('p');line.textContent=q.amount.toFixed(6)+' '+q.symbol+' · '+(q.chainId===42220?'Celo':'Testnet')+' · '+q.status.replaceAll('_',' ')+(q.reviewReason?' · Contact support: '+q.reviewReason.replaceAll('_',' '):'');parent.append(line)}
- }catch{$('#signupPaymentFeedback').textContent='Payment status temporarily unavailable.'}}
-$('#signupQuote').onclick=async()=>{
- if(checkoutBusy)return;checkoutBusy=true;$('#signupQuote').disabled=true;$('#approveSignupPayment').disabled=true;
- try{const provider=window.ethereum;if(!provider?.isMiniPay)throw Error('Open your CIV dashboard inside MiniPay to pay.');
- if(Number(await provider.request({method:'eth_chainId'}))!==checkoutConfig.chainId)throw Error('Use '+(checkoutConfig.mode==='production'?'Celo mainnet':'Celo Sepolia testnet')+' in MiniPay.');
- [checkoutSender]=await provider.request({method:'eth_accounts'});if(!checkoutSender)throw Error('Unlock MiniPay and reopen your dashboard.');
- checkoutQuote=await request('/api/payments/quotes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:$('#paymentToken').value,sender:checkoutSender,amount:selectedDepositAmount})});
- $('#signupCheckout').classList.remove('hidden');$('#paymentQuoteSummary').textContent=(checkoutConfig.mode==='production'?'Deposit ':'TEST ONLY: ')+checkoutQuote.amount.toFixed(6)+' '+checkoutQuote.symbol+'. Your recorded balance is credited in '+checkoutQuote.symbol+'. Network fees are additional. Complete the transfer before expiry.';
- $('#approveSignupPayment').disabled=false;$('#signupPaymentFeedback').textContent='Review the amount, then approve in MiniPay. Never send a manual transfer using an old quote.';updateQuoteCountdown();
- }catch(e){$('#signupPaymentFeedback').textContent=e.message}finally{checkoutBusy=false;$('#signupQuote').disabled=!checkoutConfig?.ready}
-};
-function updateQuoteCountdown(){if(!checkoutQuote)return;const seconds=Math.max(0,Math.floor((checkoutQuote.expiresAt-Date.now())/1000));$('#quoteCountdown').textContent=seconds?'Quote expires in '+Math.floor(seconds/60)+':'+String(seconds%60).padStart(2,'0'):'Quote expired. Request a fresh quote before paying.';if(!seconds)$('#approveSignupPayment').disabled=true}
-setInterval(updateQuoteCountdown,1000);
-$('#approveSignupPayment').onclick=async()=>{
- if(checkoutBusy||!checkoutQuote)return;checkoutBusy=true;$('#approveSignupPayment').disabled=true;$('#signupQuote').disabled=true;
- try{if(Date.now()>=checkoutQuote.expiresAt)throw Error('Quote expired. Request a fresh quote.');
- const provider=window.ethereum;const [sender]=await provider.request({method:'eth_accounts'});if(sender?.toLowerCase()!==checkoutSender?.toLowerCase()||Number(await provider.request({method:'eth_chainId'}))!==checkoutQuote.chainId)throw Error('Wallet or network changed. Request a new quote.');
- $('#signupPaymentFeedback').textContent='Review and approve this transfer in MiniPay.';
- const txHash=await provider.request({method:'eth_sendTransaction',params:[{...checkoutQuote.transaction,from:sender}]});
- $('#signupPaymentFeedback').textContent='Transfer submitted. Waiting for on-chain finality. You can return later; verification continues automatically.';
- const result=await request('/api/payments/quotes/'+checkoutQuote.id+'/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({txHash})});
- if(result.status==='verified')$('#signupPaymentFeedback').textContent='Deposit verified. Your balance and membership are updated.';
- if(result.status==='verified_test')$('#signupPaymentFeedback').textContent='Test payment verified. No real membership credit was created.';
- if(result.status==='review'||result.status==='mismatch')$('#signupPaymentFeedback').textContent='Payment needs review. Do not pay again; contact support.';
- await loadOnboarding();await loadInvestorOverview();await civRefreshExtras();
- }catch(e){$('#signupPaymentFeedback').textContent=e.code===4001?'Payment cancelled in MiniPay.':e.message+' If you approved a transfer, wait for verification before trying again.'}finally{checkoutBusy=false;checkoutQuote=null;$('#signupCheckout').classList.add('hidden');await refreshSignupPayments()}
-};
-setInterval(()=>{if(!document.hidden&&document.body.classList.contains('signed-in'))refreshSignupPayments()},30000);
-
-document.querySelectorAll('[data-deposit-amount]').forEach(button=>button.onclick=()=>{selectedDepositAmount=Number(button.dataset.depositAmount);checkoutQuote=null;$('#signupCheckout').classList.add('hidden');document.querySelectorAll('[data-deposit-amount]').forEach(x=>x.setAttribute('aria-pressed',String(x===button)))});
-$('#paymentToken').addEventListener('change',()=>{checkoutQuote=null;$('#signupCheckout').classList.add('hidden')});
-$('#goDeposit').onclick=()=>document.querySelector('[data-vault-tab="deposits"]').click();
-$('#copyReceivingWallet').onclick=async()=>{try{await navigator.clipboard.writeText($('#receivingWallet').value);$('#manualTransferStatus').textContent='Address copied. Use Celo mainnet and the selected token only.'}catch{$('#receivingWallet').select();$('#manualTransferStatus').textContent='Select and copy the address.'}};
-$('#submitManualTransfer').onclick=async()=>{const button=$('#submitManualTransfer');button.disabled=true;try{const result=await request('/api/payments/manual-claims',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({asset:$('#paymentToken').value,txHash:$('#manualHash').value.trim()})});$('#manualTransferStatus').textContent=result.notice}catch(e){$('#manualTransferStatus').textContent=e.message}finally{button.disabled=false}};
-document.querySelectorAll('[data-vault-tab]').forEach(button=>button.addEventListener('click',()=>{window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'instant':'smooth'})}));
-$('#headerProfile').onclick=()=>document.querySelector('[data-vault-tab="account"]').click();
-$('#footerYear').textContent=String(new Date().getFullYear());
-</script></body></html>+amount;
-  button.querySelector('span').textContent=sandbox?(index?'Next test amount':'Test tokens only'):(index?'Next option':'Minimum deposit');
-  button.setAttribute('aria-pressed',String(selectedDepositAmount===amount));
- });
- $('#depositAmountHeadline').textContent=sandbox?'Test with 1 or 2 USDC.':'Start with $100.';
- $('#depositAmountDescription').textContent=sandbox?'Celo Sepolia test tokens have no value. No real deposit, membership activation or referral credit occurs.':'100 stablecoin units minimum. $100 and $200 are dollar references; USDC and USDT can trade away from $1.';
- $('#collectionHelp').textContent=sandbox?'Celo Sepolia test mode only. Use a separate test receiving wallet; real deposits remain disabled.':checkoutConfig.liveDepositsEnabled?'USDC and USDT on Celo mainnet. Review the network fee in MiniPay before approving.':'Your receiving wallet is being configured. Do not send funds yet.';
- $('#paymentSetupStatus').textContent=checkoutConfig.liveDepositsEnabled?'Celo · Live deposits':checkoutConfig.ready?'Celo Sepolia · Test mode':'Receiving wallet pending';
- const wallet=await request('/api/payments/wallet');const insideMiniPay=!!window.ethereum?.isMiniPay;
- $('#externalWalletDetails').classList.toggle('hidden',!wallet.ready||insideMiniPay);if(wallet.address&&!insideMiniPay)$('#receivingWallet').value=wallet.address;
- $('#manualTransferStatus').textContent=insideMiniPay?'Use the verified MiniPay flow above.':wallet.ready?'Address transfers remain pending review until reconciled to your account.':'Receiving wallet awaiting configuration. Do not send funds yet.';
- const token=$('#paymentToken');for(const option of token.options)option.disabled=!checkoutConfig.supportedTokens.includes(option.value);
- if(!checkoutConfig.supportedTokens.includes(token.value))token.value=checkoutConfig.supportedTokens[0];
+ const token=$('#paymentToken');for(const option of token.options)option.disabled=checkoutConfig.ready&&!checkoutConfig.supportedTokens.includes(option.value);
+ if(checkoutConfig.ready&&!checkoutConfig.supportedTokens.includes(token.value))token.value=checkoutConfig.supportedTokens[0];
  $('#signupQuote').disabled=!checkoutConfig.ready||checkoutBusy;$('#signupQuote').textContent=checkoutConfig.ready?(checkoutConfig.mode==='production'?'Continue with MiniPay':'Test deposit with MiniPay'):'Receiving wallet pending';
  const history=await request('/api/payments/quotes');const parent=$('#signupPaymentHistory');parent.replaceChildren();if(!history.quotes.length)parent.textContent='No payment requests yet.';
  for(const q of history.quotes.slice(0,5)){const line=document.createElement('p');line.textContent=q.amount.toFixed(6)+' '+q.symbol+' · '+(q.chainId===42220?'Celo':'Testnet')+' · '+q.status.replaceAll('_',' ')+(q.reviewReason?' · Contact support: '+q.reviewReason.replaceAll('_',' '):'');parent.append(line)}
