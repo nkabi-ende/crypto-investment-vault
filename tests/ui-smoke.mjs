@@ -54,7 +54,7 @@ try{
   await expect(page.locator('#civDepositGuide')).toBeVisible();await expect(page.locator('#civGuideTitle')).toContainText('Prepare a paying wallet');
   await page.locator('#civGuideSkip').click();
   await expect(page.locator('#civDepositGuide')).not.toBeVisible();
-  await expect(page.locator('#signupQuote')).toHaveText('Continue with MiniPay');
+  await expect(page.locator('#signupQuote')).toHaveText('Continue with MiniPay · Pilot');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'Deposit horizontal overflow at '+width);
   if(width<=700){const nav=await page.locator('.vault-nav').boundingBox();assert.ok(nav.y+nav.height<=844&&nav.y>650);assert.equal(await page.locator('.vault-nav button').count(),5)}
   await page.locator('[data-deposit-amount="200"]').click();await page.locator('#signupQuote').click();await expect(page.locator('#paymentQuoteSummary')).toContainText('200.000000 USDC');assert.equal(lastQuoteBody.amount,200);assert.equal(lastQuoteBody.symbol,'USDC');
