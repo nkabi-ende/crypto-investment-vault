@@ -10,7 +10,7 @@ The earlier R500 activation payment has been superseded. R500 is a separate depo
 
 - General signup: https://cryptoinvestmentvault.com/join
 - Member dashboard: https://cryptoinvestmentvault.com/dashboard
-- Member invitations: `/r/<signup-user-uuid>`
+- Member invitations: `/r/<10-character-code>` (older member UUID links redirect to the same invitation)
 
 Registration writes the user, account profile, consent, portfolio, referral code, welcome-email outbox event and session in an atomic D1 batch. Failure rolls back the whole account. The public member ID is not a password or a bearer credential. Every funding quote, verified receipt, promotion record and manual transfer claim is bound to the authenticated member ID. Referral attribution is immutable; self-referrals and campaign attribution are blocked. Compact historical member links redirect to the full ID.
 
@@ -58,3 +58,9 @@ GitHub PR checks also run `node tests/ui-smoke.mjs` with isolated fixtures at 32
 Deployment applies all remote migrations before code, then runs `npm run test:smoke`. Readiness reports schema 11. New collection config is `/api/payments/config`; `/api/celo/config` remains the older sandbox interface. Account and payment APIs use no-store responses, HttpOnly sessions, same-origin write checks, size limits and authentication/rate checks.
 
 Welcome emails remain queued until a verified sending provider is configured. Email verification and self-service recovery are not yet enabled. Keep delivery disabled until ready; `src/email.ts` contains the template and opt-in Resend adapter. Five-minute cron delivery uses leases and provider idempotency keys. Do not interpret a welcome email as proof of identity or compliance.
+
+## Referral credits
+
+Migration 0012 assigns stable random ten-character invitation aliases to existing and new accounts without rewriting member IDs or historic attribution. Links, copy and native sharing lead directly to signup. Profile shows registrations, funded referrals, pending referrals and a separate ZAR referral wallet.
+
+An immutable, single R1,000 promotional credit is recorded for the original inviter when the referred account reaches the verified production funding minimum of 100 USDC/USDT. A database trigger runs in the funding receipt transaction, including background reconciliation. Signup alone, testnet, pending or rejected payments do not qualify. Repeat deposits and verification retries cannot duplicate a credit. Existing eligible referrals are backfilled. Refunds suspend credits while qualifying net funding is below the minimum; the original ledger identity remains. ZAR credits do not mint stablecoins or execute transfers; withdrawals remain disabled. R500 deposit promotional eligibility remains subject to final offer terms.

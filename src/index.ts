@@ -49,7 +49,7 @@ app.use('/api/auth/*',async(c,next)=>{
  await next();
 });
 const emailPattern=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const referralPattern=/^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
+const referralPattern=/^(?:[a-f0-9]{10}|[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
 const termsVersion='2026-11-16';
 app.post('/api/auth/register',async c=>{
  const body=await c.req.json().catch(()=>null);
@@ -63,7 +63,7 @@ app.post('/api/auth/register',async c=>{
  if(body.acceptTerms!==true)return c.json({error:'Accept the Terms, Privacy Notice and Risk Disclosure to continue'},400);
  let attributedCode:string|null=null;
  if(referralPattern.test(referral)) {
-  const record=await c.env.DB.prepare('SELECT code FROM referral_codes WHERE (code=? OR user_id=?) AND user_id IS NOT NULL').bind(referral,referral).first<{code:string}>();
+  const record=await c.env.DB.prepare('SELECT r.code FROM referral_codes r LEFT JOIN referral_aliases a ON a.user_id=r.user_id WHERE (r.code=? OR r.user_id=? OR a.code=?) AND r.user_id IS NOT NULL').bind(referral,referral,referral).first<{code:string}>();
   attributedCode=record?.code||null;
  }
  const id=crypto.randomUUID(),salt='v2:'+rand(16),hash=await passwordHash(password,salt);
@@ -81,7 +81,8 @@ app.post('/api/auth/register',async c=>{
   if(String(error).includes('UNIQUE constraint failed: users.email'))return c.json({error:'Unable to create account. Try signing in or use another email.'},409);
   throw error;
  }
- return c.json({user:{id,email,name},referral:{code:id,url:new URL('/r/'+id,c.env.APP_ORIGIN).href},signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000,status:'awaiting_payment',collectionEnabled:false},welcomeEmail:envEmailStatus(c.env)},201);
+ const alias=await c.env.DB.prepare('SELECT code FROM referral_aliases WHERE user_id=?').bind(id).first<{code:string}>();
+ return c.json({user:{id,email,name},referral:{code:alias!.code,url:new URL('/r/'+alias!.code,c.env.APP_ORIGIN).href},signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000,status:'awaiting_payment',collectionEnabled:false},welcomeEmail:envEmailStatus(c.env)},201);
 });
 function envEmailStatus(env:Bindings){return env.EMAIL_DELIVERY_ENABLED==='true'&&env.RESEND_API_KEY&&env.EMAIL_FROM?'queued':'awaiting_provider'}
 app.post('/api/auth/login',async c=>{
@@ -133,7 +134,7 @@ app.get('/api/investor/onboarding',async c=>{
  return c.json({name:profile?.display_name||null,memberId:user.id,termsAcceptedAt:profile?.terms_accepted_at||null,
   emailVerified:false,welcomeEmail:email?.status==='sent'?'sent':envEmailStatus(c.env),
   signupDeposit:{...member.deposit,collectionEnabled:paymentConfig(c.env).liveDepositsEnabled},activated:member.activated,balances:member.balances,promotion:member.promotion,perks:member.perks,
-  referral:{code:user.id,url:new URL('/r/'+user.id,c.env.APP_ORIGIN).href,...member.referral,rewardsEnabled:false}});
+  referral:{code:member.invitationCode,url:new URL('/r/'+member.invitationCode,c.env.APP_ORIGIN).href,...member.referral,rewardsEnabled:true},referralWallet:member.referralWallet});
 });
 
 app.get('/api/payments/config',c=>{const {rpc,treasury,...config}=paymentConfig(c.env);return c.json(config)});
@@ -385,9 +386,11 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT token_minor,funding_minor,purpose,expires_at FROM payment_quotes LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,asset,amount_minor,refunded_minor FROM funding_receipts LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,status FROM deposit_promotions LIMIT 0'),
+  c.env.DB.prepare('SELECT code,user_id FROM referral_aliases LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,status FROM referral_wallet LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,status FROM manual_deposit_claims LIMIT 0')
  ]);
- return c.json({ready:true,schema:11,membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:12,membershipDepositsEnabled:paymentConfig(c.env).liveDepositsEnabled,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
@@ -406,9 +409,9 @@ app.get('/dashboard',entryPage);
 app.get('/r/:code',async c=>{
  const code=c.req.param('code').toLowerCase();
  if(!referralPattern.test(code))return c.text('Invitation not found',404);
- const found=await c.env.DB.prepare('SELECT user_id FROM referral_codes WHERE (code=? OR user_id=?) AND user_id IS NOT NULL').bind(code,code).first<{user_id:string}>();
+ const found=await c.env.DB.prepare('SELECT r.user_id,a.code FROM referral_codes r JOIN referral_aliases a ON a.user_id=r.user_id WHERE (r.code=? OR r.user_id=? OR a.code=?) AND r.user_id IS NOT NULL').bind(code,code,code).first<{user_id:string,code:string}>();
  if(!found)return c.text('Invitation not found',404);
- if(c.req.param('code')!==found.user_id)return c.redirect('/r/'+found.user_id,301);
+ if(c.req.param('code')!==found.code)return c.redirect('/r/'+found.code,301);
  return entryPage(c);
 });
 export default {fetch:app.fetch, scheduled(_event:ScheduledController,env:Bindings,ctx:ExecutionContext){

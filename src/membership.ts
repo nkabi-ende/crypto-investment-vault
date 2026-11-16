@@ -1,6 +1,6 @@
 /** Read-only activation model. Payment adapters must verify settlement before writing signup_deposits. */
 export async function membership(db:D1Database,userId:string) {
- const [activation,referrals,perks,promo,balances]=await db.batch([
+ const [activation,referrals,perks,promo,balances,alias,rewards]=await db.batch([
   db.prepare('SELECT required_minor,settled_minor,active FROM member_activation WHERE user_id=?').bind(userId),
   db.prepare(`SELECT COUNT(*) AS registrations,COALESCE(SUM(m.active),0) AS qualified
    FROM referral_attributions a JOIN referral_codes r ON r.code=a.code
@@ -11,15 +11,20 @@ export async function membership(db:D1Database,userId:string) {
    JOIN member_activation m ON m.user_id=a.user_id WHERE r.user_id=? AND m.active=1) END AS progress
    FROM member_perks p WHERE p.status='published' ORDER BY p.threshold,p.id`).bind(userId),
   db.prepare('SELECT amount_minor,status FROM deposit_promotions WHERE user_id=?').bind(userId),
-  db.prepare('SELECT asset,SUM(amount_minor-refunded_minor) AS amount_minor FROM funding_receipts WHERE user_id=? GROUP BY asset').bind(userId)
+  db.prepare('SELECT asset,SUM(amount_minor-refunded_minor) AS amount_minor FROM funding_receipts WHERE user_id=? GROUP BY asset').bind(userId),
+  db.prepare('SELECT code FROM referral_aliases WHERE user_id=?').bind(userId),
+  db.prepare("SELECT COALESCE(SUM(CASE WHEN status='credited' THEN amount_minor ELSE 0 END),0) AS credited,COALESCE(SUM(CASE WHEN status='suspended' THEN amount_minor ELSE 0 END),0) AS suspended FROM referral_wallet WHERE user_id=?").bind(userId)
  ]);
  const a=activation.results[0] as {required_minor:number,settled_minor:number,active:number}|undefined;
  const required=a?.required_minor??100000000,settled=a?.settled_minor??0,active=a?.active===1;
+ const reward=rewards.results[0] as {credited:number,suspended:number};
  const counts=referrals.results[0] as {registrations:number,qualified:number};
  return {
   deposit:{currency:'USDC_OR_USDT',requiredMinor:required,settledMinor:settled,remainingMinor:Math.max(0,required-settled),
    status:active?'settled':settled>0?'partially_paid':'awaiting_payment',collectionEnabled:false},
   activated:active,
+  invitationCode:(alias.results[0] as {code:string}).code,
+  referralWallet:{currency:'ZAR',amountMinor:Number(reward.credited),suspendedMinor:Number(reward.suspended),rewardMinor:100000,withdrawable:false},
   balances:balances.results.map((x:any)=>({asset:x.asset,amountMinor:x.amount_minor})),
   promotion:promo.results.length?{currency:'ZAR',amountMinor:50000,status:active?(promo.results[0] as {status:string}).status:'ineligible',withdrawable:false}:{currency:'ZAR',amountMinor:50000,status:'requires_deposit',withdrawable:false},
   referral:{registrations:counts.registrations,qualified:counts.qualified,pending:counts.registrations-counts.qualified},
