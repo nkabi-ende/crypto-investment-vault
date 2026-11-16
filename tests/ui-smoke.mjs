@@ -4,6 +4,9 @@ import {readFile,mkdir} from 'node:fs/promises';
 import {chromium,expect} from '@playwright/test';
 import assert from 'node:assert/strict';
 const html=await readFile('public/index.html','utf8');
+assert.equal(html.split('<script').length-1,html.split('</script>').length-1,'Scripts must have matching closing tags');
+assert.equal(html.split('async function refreshSignupPayments(').length-1,1,'Only one payment refresh handler may exist');
+assert.equal(html.split("$('#signupQuote').onclick=async()=>").length-1,1,'Only one checkout click handler may exist');
 let lastQuoteBody;
 const id='00000000-0000-4000-8000-000000000001';
 const server=createServer(async(req,res)=>{
@@ -14,9 +17,11 @@ const server=createServer(async(req,res)=>{
  if(path==='/api/auth/register'||path==='/api/auth/login'){res.setHeader('Set-Cookie','ui_member=1; Path=/; HttpOnly; SameSite=Lax');return reply({user:{id,email:'preview@example.invalid'}})}
  if(path==='/api/me'){if(req.headers['x-ui-auth']==='0'&&!String(req.headers.cookie||'').includes('ui_member=1')){res.statusCode=401;return reply({error:'Unauthorized'})}return reply({user:{id,email:'preview@example.invalid'}})}
  if(path==='/api/investor/onboarding')return reply({name:'CIV Member',memberId:id,welcomeEmail:'awaiting_provider',activated:false,signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000},balances:[],promotion:{currency:'ZAR',amountMinor:50000,status:'requires_deposit',withdrawable:false},referralWallet:{amountMinor:100000,suspendedMinor:0},referral:{code:'a1b2c3d4e5',url:'https://cryptoinvestmentvault.com/r/a1b2c3d4e5',registrations:0,qualified:0,pending:0},perks:[]});
+ if(path==='/api/payments/config'&&req.headers['x-ui-disabled']==='1')return reply({mode:'testnet',chainId:11142220,ready:false,liveDepositsEnabled:false,supportedTokens:['USDC'],depositPresets:[1,2]});
  if(path==='/api/payments/config')return req.headers['x-ui-sandbox']==='1'
   ?reply({mode:'testnet',chainId:11142220,ready:true,liveDepositsEnabled:false,supportedTokens:['USDC'],depositPresets:[1,2]})
   :reply({mode:'production',chainId:42220,ready:true,liveDepositsEnabled:true,supportedTokens:['USDT','USDC'],depositPresets:[100,200]});
+ if(path==='/api/payments/wallet'&&req.headers['x-ui-disabled']==='1')return reply({memberId:id,chainId:11142220,ready:false,address:null});
  if(path==='/api/payments/wallet')return reply({memberId:id,chainId:42220,ready:true,address:'0x'+'2'.repeat(40)});
  if(path==='/api/payments/quotes'&&req.method==='POST'){let body='';for await(const chunk of req)body+=chunk;lastQuoteBody=JSON.parse(body);return reply({id:'preview-quote',purpose:'funding',chainId:req.headers['x-ui-sandbox']==='1'?11142220:42220,symbol:lastQuoteBody.symbol,amount:lastQuoteBody.amount,tokenMinor:String(lastQuoteBody.amount*1e6),expiresAt:Date.now()+300000,transaction:{to:'0x'+'3'.repeat(40),data:'0x',value:'0x0'}})}
  if(path==='/api/payments/quotes')return reply({quotes:[]});
@@ -69,5 +74,17 @@ try{
  assert.equal(await sandboxPage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
  await sandboxPage.screenshot({path:'artifacts/ui/mobile-testnet-deposit.png'});
  await sandboxContext.close();
+ const disabledContext=await browser.newContext({viewport:{width:390,height:844},reducedMotion:'reduce',extraHTTPHeaders:{'x-ui-disabled':'1'}});
+ const disabledPage=await disabledContext.newPage();
+ await disabledPage.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());
+ await disabledPage.goto(origin+'/dashboard');
+ await disabledPage.locator('#vaultLoader').waitFor({state:'hidden'});
+ await disabledPage.locator('[data-vault-tab="deposits"]').click();
+ await expect(disabledPage.locator('#depositAmountHeadline')).toHaveText('Start with $100.');
+ await expect(disabledPage.locator('[data-deposit-amount="100"]')).toContainText('$100');
+ await expect(disabledPage.locator('[data-deposit-amount="200"]')).toContainText('$200');
+ await expect(disabledPage.locator('#signupQuote')).toBeDisabled();
+ assert.equal(await disabledPage.locator('[data-deposit-amount="1"]').count(),0,'Disabled sandbox must not masquerade as an active deposit offer');
+ await disabledContext.close();
  console.log('Mobile UI passed: 320, 390, 768, 1280px and isolated 1/2 USDC Sepolia sandbox; navigation, amount selection, wallet privacy, signup and quote review.');
 }finally{await browser.close();await new Promise(resolve=>server.close(resolve))}
