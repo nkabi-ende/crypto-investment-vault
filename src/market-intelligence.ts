@@ -1,5 +1,6 @@
 /** Source-attributed, read-only market intelligence. Never used to price or settle deposits. */
 type IntelligenceEnv={COINGECKO_DEMO_API_KEY?:string;CRYPTOPANIC_API_TOKEN?:string};
+type BackgroundContext={waitUntil(promise:Promise<unknown>):void};
 const headers={'content-type':'application/json; charset=utf-8','cache-control':'public, max-age=300','x-content-type-options':'nosniff'};
 const finite=(value:unknown):number|null=>typeof value==='number'&&Number.isFinite(value)?value:null;
 async function jsonFrom(url:string,headers:Record<string,string>,ms=8000):Promise<any>{
@@ -7,7 +8,7 @@ async function jsonFrom(url:string,headers:Record<string,string>,ms=8000):Promis
  if(!r.ok)throw Error('Provider unavailable');
  return r.json();
 }
-async function cached(request:Request,ctx:ExecutionContext,ttl:number,load:()=>Promise<object>):Promise<Response>{
+async function cached(request:Request,ctx:BackgroundContext,ttl:number,load:()=>Promise<object>):Promise<Response>{
  const cache=caches.default,key=new Request(request.url,{method:'GET'});
  const prior=await cache.match(key);
  if(prior)return prior;
@@ -16,7 +17,7 @@ async function cached(request:Request,ctx:ExecutionContext,ttl:number,load:()=>P
  ctx.waitUntil(cache.put(key,response.clone()));
  return response;
 }
-export async function marketPulse(env:IntelligenceEnv,request:Request,ctx:ExecutionContext):Promise<Response>{
+export async function marketPulse(env:IntelligenceEnv,request:Request,ctx:BackgroundContext):Promise<Response>{
  if(!env.COINGECKO_DEMO_API_KEY)return Response.json({error:'Market pulse awaits CoinGecko API configuration',code:'PROVIDER_NOT_CONFIGURED'},{status:503});
  try{
   return await cached(request,ctx,300,async()=>{
@@ -40,7 +41,7 @@ export async function marketPulse(env:IntelligenceEnv,request:Request,ctx:Execut
   });
  }catch{console.error('CIV market intelligence unavailable');return Response.json({error:'CoinGecko market pulse is temporarily unavailable',code:'MARKET_PULSE_UNAVAILABLE'},{status:503})}
 }
-export async function cryptoHeadlines(env:IntelligenceEnv,request:Request,ctx:ExecutionContext):Promise<Response>{
+export async function cryptoHeadlines(env:IntelligenceEnv,request:Request,ctx:BackgroundContext):Promise<Response>{
  if(!env.CRYPTOPANIC_API_TOKEN)return Response.json({error:'News feed awaits provider activation',code:'NEWS_NOT_CONFIGURED'},{status:503});
  try{
   return await cached(request,ctx,900,async()=>{
