@@ -20,7 +20,9 @@ jobs:
         with:
           node-version: '22'
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+      - name: Validate account and database behavior
+        run: npm run check
       - name: Generate Open Graph and favicon PNG assets
         run: |
           python -m pip install --disable-pip-version-check Pillow==11.3.0
@@ -37,6 +39,5 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Verify public API status
-        run: |
-          node -e "fetch('https://cryptoinvestmentvault.com/api/status').then(async r=>{const d=await r.json();if(!r.ok||d.fundingEnabled!==false||d.liveTradingEnabled!==false)throw Error('Unexpected production API status');console.log('Production API checks passed')}).catch(e=>{console.error(e);process.exit(1)})"
+      - name: Verify production signup, schema, social preview and API boundaries
+        run: npm run test:smoke
