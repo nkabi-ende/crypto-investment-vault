@@ -9,7 +9,7 @@ export const testUSDC='0x2f25deb3848c207fc8e0c34035b3ba7fc157602b';
 const transferTopic='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const padAddress=(a:string)=>'0x'+a.slice(2).padStart(64,'0');
 /** Production is deliberately pilot-only; a missing canary secret fails closed. */
-const normalizedCanary=(env:PaymentEnv)=>typeof env.PAYMENT_CANARY_EMAIL==='string'&&/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(env.PAYMENT_CANARY_EMAIL.trim())?env.PAYMENT_CANARY_EMAIL.trim().toLowerCase():null;
+const normalizedCanary=(env:PaymentEnv)=>typeof env.PAYMENT_CANARY_EMAIL==='string'&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(env.PAYMENT_CANARY_EMAIL.trim())?env.PAYMENT_CANARY_EMAIL.trim().toLowerCase():null;
 export function pilotAllowed(env:PaymentEnv,email:unknown){
  return env.PAYMENT_MODE==='production'&&env.PAYMENT_CANARY_ONLY==='true'&&
  typeof email==='string'&&normalizedCanary(env)!==null&&email.trim().toLowerCase()===normalizedCanary(env);
