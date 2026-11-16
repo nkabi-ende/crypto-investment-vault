@@ -14,7 +14,7 @@ for(const path of ['/legal/terms.html','/legal/privacy.html','/legal/risk.html']
  const html=await r.text();
  assert.ok(html.includes('mailto:info@cryptoinvestmentvault.com'),path);
  assert.ok(html.includes('mailto:dev@cryptoinvestmentvault.com'),path);
- assert.doesNotMatch(html,/[\\w.%+-]+@gmail\\.com/i,path);
+ assert.doesNotMatch(html, /@gmail[.]com/i,path);
 }
 const retired=await fetch(new URL('/r/kzn-ai',origin));assert.equal(retired.status,404);await retired.text();
 const image=await fetch(new URL('/og-invitation-v2.png',origin));assert.equal(image.status,200);assert.match(image.headers.get('content-type'),/image\/png/);const bytes=new Uint8Array(await image.arrayBuffer());assert.deepEqual([...bytes.slice(0,8)],[137,80,78,71,13,10,26,10]);
