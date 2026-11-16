@@ -52,4 +52,4 @@ Run `npm run db:migrate:local` or `npm run db:migrate:remote` to apply all migra
 
 ## Signup and referral release
 
-See [production onboarding](docs/production-onboarding.md) for public signup links, migration 0008, transactional email activation, verification limits and the outstanding MiniPay treasury configuration. Run `npm run check` before deployment and `npm run test:smoke` after deployment.
+See [production onboarding](docs/production-onboarding.md) for public signup links, migrations 0008–0009, R500 membership activation, member-ID referral links and configurable future perks, transactional email activation, verification limits and the outstanding MiniPay treasury configuration. Run `npm run check` before deployment and `npm run test:smoke` after deployment.

@@ -11,7 +11,15 @@ before(async()=>{
  db=await mf.getD1Database('DB');
  for(const file of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort()){
   const sql=(await readFile('migrations/'+file,'utf8')).replace(/--[^\n]*/g,'');
-  for(const statement of sql.split(';').map(x=>x.trim()).filter(Boolean)) await db.prepare(statement).run();
+  let statement='';
+  for(const line of sql.split('\n')){statement+=line+'\n';if(!line.trim().endsWith(';'))continue;if(/^CREATE TRIGGER/i.test(statement.trim())&&!statement.trim().endsWith('END;'))continue;await db.prepare(statement.trim()).run();statement=''}
+  if(file.startsWith('0008')){
+   for(const [id,email] of [['00000000-0000-4000-8000-000000000001','legacy-owner@example.com'],['00000000-0000-4000-8000-000000000002','legacy-member@example.com'],['00000000-0000-4000-8000-000000000003','legacy-direct@example.com']])await db.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,email,'unused','unused').run();
+   await db.prepare('INSERT INTO referral_codes(code,user_id) VALUES(?,?)').bind('00000000000040008000000000000001','00000000-0000-4000-8000-000000000001').run();
+   await db.prepare('INSERT INTO referral_attributions(user_id,code) VALUES(?,?)').bind('00000000-0000-4000-8000-000000000002','00000000000040008000000000000001').run();
+   await db.prepare('INSERT INTO referral_codes(code,label) VALUES(?,?)').bind('kzn-ai','obsolete campaign').run();
+   await db.prepare('INSERT INTO referral_attributions(user_id,code) VALUES(?,?)').bind('00000000-0000-4000-8000-000000000003','kzn-ai').run();
+  }
  }
 });
 after(async()=>{await mf?.dispose()});
@@ -20,17 +28,17 @@ async function call(path,{body,cookie,method='GET',headers={},address}={}){
  const r=await mf.dispatchFetch(origin+path,{method,headers:{'cf-connecting-ip':address||`192.0.2.${ip++}`,...(body?{'Content-Type':'application/json'}:{}),...(cookie?{Cookie:cookie}:{}),...headers},...(body?{body:JSON.stringify(body)}:{})});
  const raw=await r.text();if(!raw.startsWith('{'))throw Error(raw);const data=JSON.parse(raw);return {r,data,cookie:r.headers.get('set-cookie')?.split(';')[0]};
 }
-const payload=(email,referral='kzn-ai')=>({email,password:'a long unique passphrase 123',name:'Brandon Nkabinde',acceptTerms:true,referral});
+const payload=(email,referral=null)=>({email,password:'a long unique passphrase 123',name:'Brandon Nkabinde',acceptTerms:true,referral});
 test('registration is atomic and creates a durable welcome event plus referral attribution',async()=>{
  const created=await call('/api/auth/register',{method:'POST',body:payload('First@Example.com')});
  assert.equal(created.r.status,201);assert.equal(created.data.user.email,'first@example.com');assert.equal(created.data.welcomeEmail,'awaiting_provider');
  assert.match(created.r.headers.get('set-cookie'),/HttpOnly/);assert.match(created.r.headers.get('set-cookie'),/Secure/);assert.match(created.r.headers.get('set-cookie'),/SameSite=Strict/);
  const profile=await db.prepare('SELECT * FROM account_profiles WHERE user_id=?').bind(created.data.user.id).first();assert.equal(profile.display_name,'Brandon Nkabinde');
- const attribution=await db.prepare('SELECT code FROM referral_attributions WHERE user_id=?').bind(created.data.user.id).first();assert.equal(attribution.code,'kzn-ai');
+ const attribution=await db.prepare('SELECT code FROM referral_attributions WHERE user_id=?').bind(created.data.user.id).first();assert.equal(attribution,null);
  const queue=await db.prepare('SELECT status,attempts FROM email_outbox WHERE user_id=?').bind(created.data.user.id).first();assert.deepEqual(queue,{status:'pending',attempts:0});
  const overview=await call('/api/investor/overview',{cookie:created.cookie});assert.equal(overview.data.user.id,created.data.user.id);assert.equal(overview.data.portfolio.cashUsdt,0);
  const ledger=await call('/api/investor/ledger',{cookie:created.cookie});assert.equal(ledger.r.status,200);assert.equal(ledger.data.balanceUsdt,0);
- const onboarding=await call('/api/investor/onboarding',{cookie:created.cookie});assert.match(onboarding.data.referral.url,/^https:\/\/cryptoinvestmentvault.com\/r\/[a-f0-9]{32}$/);assert.equal(onboarding.data.emailVerified,false);
+ const onboarding=await call('/api/investor/onboarding',{cookie:created.cookie});assert.equal(onboarding.data.referral.url,origin+'/r/'+created.data.user.id);assert.equal(onboarding.data.emailVerified,false);
  const ref=onboarding.data.referral.url.split('/').at(-1);
  const second=await call('/api/auth/register',{method:'POST',body:payload('second@example.com',ref)});assert.equal(second.r.status,201);
  const updated=await call('/api/investor/onboarding',{cookie:created.cookie});assert.equal(updated.data.referral.registrations,1);assert.equal(JSON.stringify(updated.data).includes('second@example.com'),false);
@@ -52,15 +60,15 @@ test('per-account lockout survives requests from different IPs and shared IP lim
  const locked=await call('/api/auth/login',{method:'POST',body:payload('unknown@example.com')});assert.equal(locked.r.status,429);assert.ok(Number(locked.r.headers.get('retry-after'))>0);
  let limited=false;for(let i=0;i<22;i++){const a=await call('/api/auth/register',{method:'POST',body:{},address:'203.0.113.88'});if(a.r.status===429){limited=true;break}}assert.ok(limited);
 });
-test('invalid attribution is ignored, expired sessions fail and existing users get a stable referral',async()=>{
+test('invalid attribution is ignored, expired sessions fail and members get a stable referral',async()=>{
  const made=await call('/api/auth/register',{method:'POST',body:payload('invalid-ref@example.com','<script>')});assert.equal(made.r.status,201);
  assert.equal(await db.prepare('SELECT * FROM referral_attributions WHERE user_id=?').bind(made.data.user.id).first(),null);
- await db.prepare('DELETE FROM referral_codes WHERE user_id=?').bind(made.data.user.id).run();
+
  const first=await call('/api/investor/onboarding',{cookie:made.cookie});const second=await call('/api/investor/onboarding',{cookie:made.cookie});assert.equal(first.data.referral.url,second.data.referral.url);
  await db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').bind(made.data.user.id).run();assert.equal((await call('/api/me',{cookie:made.cookie})).r.status,401);
 });
 test('readiness validates required schema, and payment rails remain correctly disabled',async()=>{
- const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,8);
+ const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,9);
  assert.equal((await call('/api/celo/config')).data.ready,false);
  const made=await call('/api/auth/register',{method:'POST',body:payload('payment@example.com')});
  assert.equal((await call('/api/celo/testnet/intents',{method:'POST',cookie:made.cookie,body:{amountUsd:100,sender:'0x'+'1'.repeat(40)}})).r.status,503);
@@ -69,7 +77,9 @@ test('readiness validates required schema, and payment rails remain correctly di
 });
 
 test('invitation HTML has server-rendered OpenGraph metadata and invalid links do not load signup',async()=>{
- const response=await mf.dispatchFetch(origin+'/r/kzn-ai');assert.equal(response.status,200);const html=await response.text();assert.match(html,/<meta property="og:url" content="https:\/\/cryptoinvestmentvault.com\/r\/kzn-ai">/);assert.match(html,/og-invitation-v1.png/);assert.match(html,/id="authForm"/);
+ const made=await call('/api/auth/register',{method:'POST',body:payload('social-member@example.com')});
+ const response=await mf.dispatchFetch(origin+'/r/'+made.data.user.id);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('property="og:url" content="'+origin+'/r/'+made.data.user.id+'"'));assert.match(html,/og-invitation-v1.png/);assert.match(html,/id="authForm"/);assert.match(html,/R500 signup deposit/);assert.doesNotMatch(html,/kzn-ai|KZN AI Solutions/i);
+ const retired=await mf.dispatchFetch(origin+'/r/kzn-ai');assert.equal(retired.status,404);await retired.text();
  const bad=await mf.dispatchFetch(origin+'/r/unknown-invitation');assert.equal(bad.status,404);await bad.text();
  const dashboard=await mf.dispatchFetch(origin+'/dashboard');assert.match(await dashboard.text(),/noindex,nofollow/);
 });
@@ -97,4 +107,50 @@ test('welcome mail stays queued until activation and delivery retries do not dup
   globalThis.fetch=async()=>new Response('private provider response must not be stored',{status:503});
   await deliverEmails(env);const retry=await db.prepare('SELECT status,attempts,available_at,last_error FROM email_outbox WHERE id=?').bind(sent.id).first();assert.equal(retry.status,'pending');assert.equal(retry.attempts,1);assert.ok(retry.available_at>Date.now());assert.equal(retry.last_error,'PROVIDER_HTTP_503');
  }finally{globalThis.fetch=realFetch}
+});
+
+test('migration removes campaign attribution, preserves member history and redirects legacy member URLs',async()=>{
+ assert.equal(await db.prepare("SELECT * FROM referral_codes WHERE user_id IS NULL OR label IS NOT NULL").first(),null);
+ assert.equal(await db.prepare("SELECT * FROM referral_attributions WHERE user_id='00000000-0000-4000-8000-000000000003'").first(),null);
+ const kept=await db.prepare("SELECT code FROM referral_attributions WHERE user_id='00000000-0000-4000-8000-000000000002'").first();assert.equal(kept.code,'00000000000040008000000000000001');
+ assert.equal((await db.prepare("SELECT required_minor FROM signup_deposit_requirements WHERE user_id='00000000-0000-4000-8000-000000000003'").first()).required_minor,50000);
+ const redirect=await mf.dispatchFetch(origin+'/r/00000000000040008000000000000001',{redirect:'manual'});assert.equal(redirect.status,301);assert.equal(redirect.headers.get('location'),'/r/00000000-0000-4000-8000-000000000001');await redirect.text();
+ await assert.rejects(db.prepare("INSERT INTO referral_codes(code,label) VALUES('campaign','not a member')").run());
+ await assert.rejects(db.prepare("INSERT INTO referral_attributions(user_id,code) VALUES('00000000-0000-4000-8000-000000000001','00000000000040008000000000000001')").run());
+ await assert.rejects(db.prepare("UPDATE referral_attributions SET code=code").run());
+});
+test('R500 activation counts settled production ZAR only, handles refunds and unlocks published perks',async()=>{
+ const inviter=await call('/api/auth/register',{method:'POST',body:payload('activation-owner@example.com')});
+ const invitee=await call('/api/auth/register',{method:'POST',body:payload('activation-member@example.com',inviter.data.user.id)});
+ assert.equal(invitee.data.referral.code,invitee.data.user.id);assert.equal(invitee.data.signupDeposit.requiredMinor,50000);
+ async function onboard(account){return (await call('/api/investor/onboarding',{cookie:account.cookie})).data}
+ let state=await onboard(inviter);assert.equal(state.signupDeposit.requiredMinor,50000);assert.equal(state.signupDeposit.remainingMinor,50000);assert.equal(state.signupDeposit.collectionEnabled,false);assert.equal(state.activated,false);assert.deepEqual(state.perks,[]);assert.equal(state.referral.pending,1);
+ const settle=(account,ref,amount,environment='production')=>db.prepare("INSERT INTO signup_deposits(id,user_id,provider,payment_ref,currency,amount_minor,environment,settled_at) VALUES(?,?,?,?,?,?,?,?)").bind(crypto.randomUUID(),account.data.user.id,'test-fixture',ref,'ZAR',amount,environment,new Date().toISOString()).run();
+ await assert.rejects(settle(invitee,'testnet',50000,'testnet'));
+ await assert.rejects(db.prepare("INSERT INTO signup_deposits(id,user_id,provider,payment_ref,currency,amount_minor,environment,settled_at) VALUES('fake',?,'fixture','fake-usd','USDC',50000,'production','now')").bind(invitee.data.user.id).run());
+ for(const path of ['/api/investor/onboarding','/api/investor/deposit/confirm','/api/funding/signup-deposit']){const r=await call(path,{method:'POST',cookie:invitee.cookie,body:{paid:true,amountMinor:50000}});assert.ok([403,404].includes(r.r.status))}
+ await settle(invitee,'partial',20000);state=await onboard(invitee);assert.equal(state.signupDeposit.status,'partially_paid');assert.equal(state.signupDeposit.remainingMinor,30000);assert.equal((await onboard(inviter)).referral.qualified,0);
+ await settle(invitee,'remaining',30000);await assert.rejects(settle(inviter,'remaining',30000));
+ state=await onboard(inviter);assert.equal(state.referral.qualified,1);assert.equal(state.referral.pending,0);assert.equal((await onboard(invitee)).activated,true);assert.ok(!JSON.stringify(state).includes('activation-member@example.com'));
+ await db.prepare("INSERT INTO member_perks(id,title,description,metric,threshold,status) VALUES('test-referral','Member feature','Fixture perk','qualified_referrals',1,'published'),('test-community','Community feature','Fixture community perk','activated_members',1,'published'),('draft-perk','Hidden feature','Not published','qualified_referrals',1,'draft')").run();
+ state=await onboard(inviter);assert.equal(state.perks.length,2);assert.ok(state.perks.every(p=>p.status==='locked'));
+ await settle(inviter,'owner',50000);state=await onboard(inviter);assert.ok(state.perks.every(p=>p.status==='unlocked'));
+ await db.prepare("UPDATE signup_deposits SET refunded_minor=1 WHERE payment_ref='remaining'").run();state=await onboard(inviter);assert.equal(state.referral.qualified,0);assert.equal(state.perks.find(p=>p.id==='test-referral').status,'locked');assert.equal((await onboard(invitee)).signupDeposit.remainingMinor,1);
+ const ledger=await call('/api/investor/ledger',{cookie:inviter.cookie});assert.equal(ledger.data.balanceUsdt,0);
+ await db.prepare("DELETE FROM member_perks WHERE id IN ('test-referral','test-community','draft-perk')").run();
+});
+
+test('browser invitation capture rejects campaign tags, expires old links and works without local storage',async()=>{
+ const {Script,runInNewContext}=await import('node:vm');
+ const html=await readFile('public/index.html','utf8');
+ for(const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)){if(match[0].includes('application/ld+json'))continue;new Script(match[1])}
+ const fn=html.match(/function readReferral\(\)\{[^\n]+/)[0];
+ const id='00000000-0000-4000-8000-000000000001';let saved=null;
+ const storage={setItem:(key,value)=>saved=value,getItem:()=>saved,removeItem:()=>saved=null};
+ const evaluate=(path,search='',localStorage=storage)=>runInNewContext(fn+';readReferral()',{location:{pathname:path,search},localStorage,URLSearchParams,Date});
+ assert.equal(evaluate('/r/'+id),id);assert.equal(evaluate('/'),id);
+ saved=JSON.stringify({code:'kzn-ai',at:Date.now()});assert.equal(evaluate('/'),null);assert.equal(saved,null);
+ saved=JSON.stringify({code:id,at:Date.now()-31*86400000});assert.equal(evaluate('/'),null);
+ const blocked={setItem(){throw Error('disabled')},getItem(){throw Error('disabled')}};assert.equal(evaluate('/r/'+id,'',blocked),id);
+ assert.equal(evaluate('/join','?ref='+id),id);
 });
