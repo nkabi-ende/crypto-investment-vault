@@ -50,6 +50,10 @@ Migration `0003_transparency.sql` adds:
 
 Run `npm run db:migrate:local` or `npm run db:migrate:remote` to apply all migrations before testing the transparency endpoint.
 
+## Zoho registration alerts
+
+All successful new CIV account inserts now create a durable internal alert for `info@cryptoinvestmentvault.com`, independent from customer welcome emails. The Zoho Mail provider needs production OAuth secrets before delivery can start; see [Zoho signup alerts](docs/zoho-signup-alerts.md) for exact setup, verification and failure handling. Alerts are retried by the existing five-minute cron and never contain passwords or wallet/KYC data.
+
 ## Signup and referral release
 
 See [production onboarding](docs/production-onboarding.md) for public signup links, migrations 0008–0012, stablecoin funding, short referral links, versioned Circle commissions and configurable future perks, transactional email activation, verification limits and the outstanding MiniPay treasury configuration. Run `npm run check` before deployment and `npm run test:smoke` after deployment.
