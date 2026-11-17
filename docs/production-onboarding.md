@@ -69,7 +69,7 @@ GitHub PR checks also run `node tests/ui-smoke.mjs` with isolated fixtures at 32
 
 Deployment applies all remote migrations before code, then runs `npm run test:smoke`. Readiness reports schema 15. New collection config is `/api/payments/config`; `/api/celo/config` remains the older sandbox interface. Account and payment APIs use no-store responses, HttpOnly sessions, same-origin write checks, size limits and authentication/rate checks.
 
-Welcome emails remain queued until a verified sending provider is configured. Email verification and self-service recovery are not yet enabled. Keep delivery disabled until ready; `src/email.ts` contains the template and opt-in Resend adapter. Five-minute cron delivery uses leases and provider idempotency keys. Do not interpret a welcome email as proof of identity or compliance.
+New registrations now also create a separate internal operator-alert event, using the `0022_signup_alert_emails.sql` trigger; see [Zoho signup alerts](zoho-signup-alerts.md). The Zoho Mail provider is selected for delivery to `info@cryptoinvestmentvault.com` but needs production OAuth secrets and a real receipt test before alerts are live. Customer welcome emails remain independently disabled. Five-minute cron delivery uses leases, exponential retries and provider IDs. Zoho has no documented message idempotency key, so a retry after an ambiguous timeout can duplicate a notification. Do not interpret account registration or a welcome email as proof of identity or compliance.
 
 ## Referral commissions and ADA
 

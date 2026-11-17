@@ -2,7 +2,7 @@ import { pbkdf2Sync } from 'node:crypto';
 import { Hono } from 'hono';
 import { secureFetch,sessionCookieName } from './security';
 import { bodyLimit } from 'hono/body-limit';
-import { deliverEmails } from './email';
+import { deliverEmails,emailProviderReady,type MailEnvironment } from './email';
 import { membership } from './membership';
 import { acceptAffiliateTerms,affiliateConsentVersion,affiliateSummary,leaderboard } from './circle';
 import { adaLedger } from './ada';
@@ -16,7 +16,7 @@ import { marketPrices } from './market-prices';
 import { marketYtd } from './market-ytd';
 import { paymentConfig,pilotAllowed,mainnetPreflight,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-type Bindings = PaymentEnv & { API_LIMITER: RateLimit; AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
+type Bindings = PaymentEnv & { API_LIMITER: RateLimit; AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; EMAIL_PROVIDER?: MailEnvironment['EMAIL_PROVIDER']; SIGNUP_ALERTS_ENABLED?: string; SIGNUP_ALERT_TO?: string; ZOHO_REGION?: string; ZOHO_MAIL_ACCOUNT_ID?: string; ZOHO_FROM_ADDRESS?: string; ZOHO_CLIENT_ID?: string; ZOHO_CLIENT_SECRET?: string; ZOHO_REFRESH_TOKEN?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
 type SimulationBindings = Bindings & { SHAKA_SIM_ADMIN_IDS?: string };
 const app = new Hono<{Bindings:SimulationBindings}>();
 app.onError((error,c)=>{console.error('CIV request failed',c.req.path,error instanceof Error ? error.name : 'UnknownError');return c.json({error:'Account service temporarily unavailable. Please try again.'},503)});
@@ -189,7 +189,7 @@ app.post('/api/auth/register',async c=>{
  deleteCookie(c,'civ_invite',{path:'/'});
  return c.json({user:{id,email,name},referral:{code:alias!.code,url:new URL('/r/'+alias!.code,c.env.APP_ORIGIN).href},signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000,status:'awaiting_payment',collectionEnabled:false},welcomeEmail:envEmailStatus(c.env)},201);
 });
-function envEmailStatus(env:Bindings){return env.EMAIL_DELIVERY_ENABLED==='true'&&env.RESEND_API_KEY&&env.EMAIL_FROM?'queued':'awaiting_provider'}
+function envEmailStatus(env:Bindings){return env.EMAIL_DELIVERY_ENABLED==='true'&&emailProviderReady(env)?'queued':'awaiting_provider'}
 app.post('/api/auth/login',async c=>{
  const body=await c.req.json().catch(()=>null);
  if(!body||typeof body!=='object')return c.json({error:'Invalid request'},400);
@@ -235,7 +235,7 @@ app.get('/api/investor/onboarding',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
  const [profile,email,member,identity]=await Promise.all([
   c.env.DB.prepare('SELECT display_name,terms_accepted_at FROM account_profiles WHERE user_id=?').bind(user.id).first<{display_name:string,terms_accepted_at:string}>(),
-  c.env.DB.prepare('SELECT status FROM email_outbox WHERE user_id=?').bind(user.id).first<{status:string}>(),
+  c.env.DB.prepare("SELECT status FROM email_outbox WHERE user_id=? AND event_type='account.welcome.v1'").bind(user.id).first<{status:string}>(),
   membership(c.env.DB,user.id),kycStatus(c.env.DB,user.id)
  ]);
  return c.json({name:profile?.display_name||null,memberId:user.id,termsAcceptedAt:profile?.terms_accepted_at||null,
@@ -489,7 +489,7 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT user_id,terms_version,accepted_at FROM affiliate_consents LIMIT 0'),
   c.env.DB.prepare('SELECT security_version,authenticated_at,last_seen_at FROM sessions LIMIT 0')
  ]);
- return c.json({ready:true,schema:21,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:22,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.

@@ -24,7 +24,15 @@ PAYMENTS_ENABLED = "true"
 PAYMENT_MODE = "production"
 PAYMENT_CANARY_ONLY = "true"
 CELO_MAINNET_RPC_URL = "https://forno.celo.org"
+# Customer welcome email is a separate opt-in from internal registration alerts.
 EMAIL_DELIVERY_ENABLED = "false"
+# New-account operations notifications; no outbound attempts until Zoho secrets exist.
+EMAIL_PROVIDER = "zoho"
+SIGNUP_ALERTS_ENABLED = "true"
+SIGNUP_ALERT_TO = "info@cryptoinvestmentvault.com"
+ZOHO_FROM_ADDRESS = "info@cryptoinvestmentvault.com"
+# Match this to the Zoho Mail URL; us maps to mail.zoho.com.
+ZOHO_REGION = "us"
 CELO_SEPOLIA_RPC_URL = "https://forno.celo-sepolia.celo-testnet.org"
 CELO_TEST_USDC_ADDRESS = "0x2F25deB3848C207fc8E0c34035B3Ba7fC157602B"
 
