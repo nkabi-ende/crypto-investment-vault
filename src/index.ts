@@ -92,12 +92,12 @@ app.post('/api/auth/register',async c=>{
   c.env.DB.prepare('INSERT INTO audit_events(id,user_id,event_type) VALUES(?,?,?)').bind(crypto.randomUUID(),id,'registered')
  ];
  if(attributedCode)writes.push(c.env.DB.prepare('INSERT INTO referral_attributions(user_id,code) VALUES(?,?)').bind(id,attributedCode));
+ const usedClaim=getCookie(c,'civ_invite');if(usedClaim)writes.push(c.env.DB.prepare('DELETE FROM referral_click_claims WHERE token_hash=?').bind(await digest(usedClaim)));
  try{await session(c,id,writes)}catch(error){
   if(String(error).includes('UNIQUE constraint failed: users.email'))return c.json({error:'Unable to create account. Try signing in or use another email.'},409);
   throw error;
  }
  const alias=await c.env.DB.prepare('SELECT code FROM referral_aliases WHERE user_id=?').bind(id).first<{code:string}>();
- const usedClaim=getCookie(c,'civ_invite');if(usedClaim)await c.env.DB.prepare('DELETE FROM referral_click_claims WHERE token_hash=?').bind(await digest(usedClaim)).run();
  deleteCookie(c,'civ_invite',{path:'/'});
  return c.json({user:{id,email,name},referral:{code:alias!.code,url:new URL('/r/'+alias!.code,c.env.APP_ORIGIN).href},signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000,status:'awaiting_payment',collectionEnabled:false},welcomeEmail:envEmailStatus(c.env)},201);
 });

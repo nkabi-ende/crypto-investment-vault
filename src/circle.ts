@@ -39,10 +39,10 @@ export async function leaderboard(db:D1Database,period:'month'|'all'|'newcomers'
  COALESCE(SUM(q.introduced_minor),0) AS introduced_minor
  FROM affiliate_profiles p JOIN circle_tiers t ON t.user_id=p.user_id
  LEFT JOIN circle_qualified_customers q ON q.user_id=p.user_id
- AND (?<>'month' OR datetime(q.qualified_at)>=datetime('now','start of month'))
- WHERE (?<>'newcomers' OR datetime(p.joined_at)>=datetime('now','-30 days'))
+ AND (?<>'month' OR datetime(q.qualified_at)>=datetime('now','+2 hours','start of month','-2 hours'))
+ WHERE (?<>'newcomers' OR datetime(p.joined_at)>=datetime('now','-90 days'))
  GROUP BY p.user_id ORDER BY qualified DESC,p.public_alias LIMIT 50`).bind(period,period).all<{public_alias:string,tier:Tier,qualified:number,introduced_minor:number}>();
  let previous=-1,rank=0;
  const rows=result.results.map((r,i)=>{if(r.qualified!==previous){rank=i+1;previous=r.qualified}return {rank,alias:r.public_alias,tier:r.tier,qualifiedReferrals:Number(r.qualified),capitalIntroducedBand:capitalBand(r.qualified,r.introduced_minor/1e6)}});
- return {period,asOf:new Date().toISOString(),rankingMetric:'Qualified direct referrals',capitalLabel:'Capital introduced',capitalBasis:'First eligible USDC/USDT deposits, net of refunds, in nominal token units. Excludes bonuses, gains and repeat deposits.',rows};
+ return {period,timeZone:'Africa/Johannesburg',newcomerDays:90,asOf:new Date().toISOString(),rankingMetric:'Qualified direct referrals',capitalLabel:'Capital introduced',capitalBasis:'First eligible USDC/USDT deposits, net of refunds, in nominal token units. Excludes bonuses, gains and repeat deposits.',rows};
 }

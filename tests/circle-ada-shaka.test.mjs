@@ -122,3 +122,14 @@ test('zero-result and concurrent daily closes do not mint money or accept future
  await assert.rejects(ada.publishVerifiedClose(db,{...report,id:randomUUID(),tradingDay:'2099-01-01'}));
  await assert.rejects(ada.publishVerifiedClose(db,{...report,id:randomUUID(),tradingDay:'2026-02-30'}));
 });
+
+test('newcomer recognition remains available after the 30-day qualification delay',async()=>{
+ const recent=await user(),established=await user();
+ await db.prepare("INSERT INTO affiliate_profiles(user_id,joined_at) VALUES(?,datetime('now','-60 days'))").bind(recent).run();
+ await db.prepare("INSERT INTO affiliate_profiles(user_id,joined_at) VALUES(?,datetime('now','-120 days'))").bind(established).run();
+ await matureFixture(recent);await matureFixture(established);
+ const aliases=await db.prepare('SELECT user_id,public_alias FROM affiliate_profiles WHERE user_id IN (?,?)').bind(recent,established).all();
+ const get=id=>aliases.results.find(x=>x.user_id===id).public_alias;
+ const board=await circle.leaderboard(db,'newcomers');assert.equal(board.timeZone,'Africa/Johannesburg');
+ assert.ok(board.rows.some(x=>x.alias===get(recent)&&x.qualifiedReferrals===1));assert.ok(!board.rows.some(x=>x.alias===get(established)));
+});
