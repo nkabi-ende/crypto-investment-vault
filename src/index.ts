@@ -3,6 +3,9 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deliverEmails } from './email';
 import { membership } from './membership';
+import { affiliateSummary,leaderboard } from './circle';
+import { adaLedger } from './ada';
+import { shakaMethodology } from './shaka';
 import { marketPulse,cryptoHeadlines } from './market-intelligence';
 import { marketPrices } from './market-prices';
 import { marketYtd } from './market-ytd';
@@ -53,13 +56,22 @@ app.use('/api/auth/*',async(c,next)=>{
 });
 const emailPattern=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const referralPattern=/^(?:[a-f0-9]{10}|[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
-const termsVersion='2026-11-16';
+const termsVersion='2026-11-17';
+async function referralClaim(c:import('hono').Context<{Bindings:Bindings}>){
+ const token=getCookie(c,'civ_invite');if(!token)return null;
+ return c.env.DB.prepare('SELECT c.code,a.code AS alias FROM referral_click_claims c JOIN referral_codes r ON r.code=c.code JOIN referral_aliases a ON a.user_id=r.user_id WHERE c.token_hash=? AND c.expires_at>?').bind(await digest(token),Date.now()).first<{code:string,alias:string}>();
+}
+app.get('/api/referrals/claim',async c=>{const claim=await referralClaim(c);return c.json({code:claim?.alias||null})});
+app.get('/api/strategy/shaka',c=>c.json(shakaMethodology()));
+app.get('/api/affiliates/leaderboard',async c=>{const period=c.req.query('period')||'month';if(!['month','all','newcomers'].includes(period))return c.json({error:'Unknown leaderboard period'},400);return c.json(await leaderboard(c.env.DB,period as 'month'|'all'|'newcomers'))});
+app.get('/api/investor/affiliates',async c=>{const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);return c.json(await affiliateSummary(c.env.DB,user.id))});
 app.post('/api/auth/register',async c=>{
  const body=await c.req.json().catch(()=>null);
  if(!body||typeof body!=='object')return c.json({error:'Invalid request'},400);
  const email=String(body.email||'').trim().toLowerCase(),password=String(body.password||'');
  const name=String(body.name||'').trim().replace(/\s+/g,' ');
- const referral=String(body.referral||'').toLowerCase();
+ const storedClaim=await referralClaim(c);
+ const referral=String(body.referralOverride===true?body.referral||'':storedClaim?.code||body.referral||'').trim().toLowerCase();
  if(email.length>254||!emailPattern.test(email)||password.length<12||password.length>128)
   return c.json({error:'Use a valid email and a password of 12–128 characters'},400);
  if(name.length<2||name.length>80||/[\u0000-\u001f<>]/.test(name))return c.json({error:'Enter your name (2–80 characters)'},400);
@@ -85,6 +97,8 @@ app.post('/api/auth/register',async c=>{
   throw error;
  }
  const alias=await c.env.DB.prepare('SELECT code FROM referral_aliases WHERE user_id=?').bind(id).first<{code:string}>();
+ const usedClaim=getCookie(c,'civ_invite');if(usedClaim)await c.env.DB.prepare('DELETE FROM referral_click_claims WHERE token_hash=?').bind(await digest(usedClaim)).run();
+ deleteCookie(c,'civ_invite',{path:'/'});
  return c.json({user:{id,email,name},referral:{code:alias!.code,url:new URL('/r/'+alias!.code,c.env.APP_ORIGIN).href},signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000,status:'awaiting_payment',collectionEnabled:false},welcomeEmail:envEmailStatus(c.env)},201);
 });
 function envEmailStatus(env:Bindings){return env.EMAIL_DELIVERY_ENABLED==='true'&&env.RESEND_API_KEY&&env.EMAIL_FROM?'queued':'awaiting_provider'}
@@ -124,7 +138,7 @@ app.get('/api/investor/overview',async c=>{
     holdings:[],holdingsSource:'No positions ledger has been activated',
     activity:(events.results||[]).map((e:any)=>({type:e.event_type,at:e.created_at})),
     fundingEnabled:false,withdrawalsEnabled:false,liveTradingEnabled:false,
-    notice:'Account data comes from CIV D1. No investments or returns are simulated in this view.'
+    notice:'Account balances reflect recorded funding. ADA displays reconciled account activity and performance updates.'
   });
 });
 app.get('/api/investor/onboarding',async c=>{
@@ -211,15 +225,7 @@ app.put('/api/investor/preferences',async c=>{
 });
 app.get('/api/investor/ledger',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
- const entries=await c.env.DB.prepare('SELECT id,entry_type,asset,amount_minor,source_ref,occurred_at FROM ledger_entries WHERE user_id=? ORDER BY occurred_at DESC LIMIT 100').bind(user.id).all<any>();
- const totals=await c.env.DB.prepare('SELECT COALESCE(SUM(amount_minor),0) AS balance_minor FROM ledger_entries WHERE user_id=?').bind(user.id).first<any>();
- const requests=await c.env.DB.prepare('SELECT id,asset,amount_minor,destination_network,status,requested_at FROM withdrawal_requests WHERE user_id=? ORDER BY requested_at DESC LIMIT 30').bind(user.id).all<any>();
- const funding=await c.env.DB.prepare('SELECT * FROM funding_receipts WHERE user_id=? ORDER BY created_at DESC').bind(user.id).all<any>();
- const usdt=Number(totals?.balance_minor||0)+funding.results.filter(x=>x.asset==='USDT').reduce((a,x)=>a+x.amount_minor-x.refunded_minor,0);
- const usdc=funding.results.filter(x=>x.asset==='USDC').reduce((a,x)=>a+x.amount_minor-x.refunded_minor,0);
- return c.json({asOf:new Date().toISOString(),currency:'STABLECOINS',balanceUsdt:usdt/1e6,balanceUsdc:usdc/1e6,
-  entries:[...(entries.results||[]).map((x:any)=>({id:x.id,type:x.entry_type,amountUsdt:x.amount_minor/1e6,asset:x.asset,at:x.occurred_at})),...funding.results.map(x=>({id:x.id,type:'verified_deposit',amountUsdt:(x.amount_minor-x.refunded_minor)/1e6,asset:x.asset,at:x.settled_at}))],
-  withdrawalRequests:requests.results,depositsEnabled:paymentConfig(c.env).liveDepositsEnabled&&pilotAllowed(c.env,user.email),withdrawalsEnabled:false,payoutsEnabled:false,valuationPolicy:'Actual stablecoin units, recorded separately. CIV is a platform, not a token.'});
+ return c.json({...await adaLedger(c.env.DB,user.id),depositsEnabled:paymentConfig(c.env).liveDepositsEnabled&&pilotAllowed(c.env,user.email)});
 });
 app.get('/api/investor/projection',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
@@ -376,9 +382,13 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT code,user_id FROM referral_aliases LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,status FROM referral_wallet LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,status FROM manual_deposit_claims LIMIT 0'),
-  c.env.DB.prepare('SELECT cache_key,response_json,updated_at_ms FROM market_data_cache LIMIT 0')
+  c.env.DB.prepare('SELECT cache_key,response_json,updated_at_ms FROM market_data_cache LIMIT 0'),
+  c.env.DB.prepare('SELECT version,tier,amount_minor,status FROM circle_wallet LIMIT 0'),
+  c.env.DB.prepare('SELECT public_alias,publication_policy FROM affiliate_profiles LIMIT 0'),
+  c.env.DB.prepare('SELECT status,evidence_ref FROM ada_transactions LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,asset,bucket,amount_minor FROM ada_balances LIMIT 0')
  ]);
- return c.json({ready:true,schema:13,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:15,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
@@ -400,6 +410,10 @@ app.get('/r/:code',async c=>{
  const found=await c.env.DB.prepare('SELECT r.user_id,a.code FROM referral_codes r JOIN referral_aliases a ON a.user_id=r.user_id WHERE (r.code=? OR r.user_id=? OR a.code=?) AND r.user_id IS NOT NULL').bind(code,code,code).first<{user_id:string,code:string}>();
  if(!found)return c.text('Invitation not found',404);
  if(c.req.param('code')!==found.code)return c.redirect('/r/'+found.code,301);
+ if(!await referralClaim(c)){
+  const token=rand();await c.env.DB.prepare('INSERT INTO referral_click_claims(token_hash,code,expires_at) SELECT ?,code,? FROM referral_codes WHERE user_id=?').bind(await digest(token),Date.now()+30*86400000,found.user_id).run();
+  setCookie(c,'civ_invite',token,{httpOnly:true,secure:true,sameSite:'Lax',path:'/',maxAge:30*86400});
+ }
  return entryPage(c);
 });
 export default {fetch:app.fetch, scheduled(_event:ScheduledController,env:Bindings,ctx:ExecutionContext){
@@ -408,6 +422,7 @@ export default {fetch:app.fetch, scheduled(_event:ScheduledController,env:Bindin
  ctx.waitUntil(reconcilePayments(env));
  ctx.waitUntil(env.DB.batch([
   env.DB.prepare('DELETE FROM sessions WHERE expires_at<?').bind(Date.now()),
+  env.DB.prepare('DELETE FROM referral_click_claims WHERE expires_at<?').bind(Date.now()),
   env.DB.prepare('DELETE FROM auth_attempts WHERE window_start<? AND locked_until<?').bind(Date.now()-86400000,Date.now())
  ]));
 }};
