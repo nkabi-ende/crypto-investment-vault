@@ -70,6 +70,8 @@ for(const path of ['/','/dashboard']){
 }
 for(const path of ['/api/investor/kyc','/api/investor/withdrawals','/api/admin/kyc','/review-identity.js']){const response=await fetch(new URL(path,origin));assert.equal(response.status,401,path);assert.equal(response.headers.get('Cache-Control'),'no-store');await response.text()}
 const review=await fetch(new URL('/review-identity.html',origin),{redirect:'manual'});assert.equal(review.status,303);assert.equal(review.headers.get('location'),'/join');await review.text();
+const admin=await fetch(new URL('/admin',origin),{redirect:'manual'});assert.equal(admin.status,303);assert.equal(admin.headers.get('location'),'/join?returnTo=%2Fadmin');assert.equal(admin.headers.get('cache-control'),'no-store');await admin.text();
+const adminCss=await fetch(new URL('/admin.css',origin));assert.equal(adminCss.status,200);assert.match(await adminCss.text(),/#b5f269/);
 for(const path of ['/.env','/src/index.ts','/index.html.map']){const response=await fetch(new URL(path,origin));assert.equal(response.status,404);await response.text()}
 const csrf=await fetch(new URL('/api/auth/logout',origin),{method:'POST',headers:{Origin:'https://untrusted.invalid'}});assert.equal(csrf.status,403);await csrf.text();
 console.log('Security checks passed: enforced script nonces, private cache boundaries, protected reviewer resources, source artifacts blocked and cross-origin writes refused.');

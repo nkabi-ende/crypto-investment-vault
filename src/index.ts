@@ -9,6 +9,7 @@ import { adaLedger } from './ada';
 import { kycStatus,registerKycRoutes } from './kyc';
 import { shakaMethodology } from './shaka';
 import { dashboardMirror } from './dashboard-mirror';
+import { adminPage } from './admin-page';
 import { closeShakaSimulation,scheduleSimulation,simulationAdmin,simulationLedger,verifySimulationMember } from './shaka-simulation';
 import { marketPulse,cryptoHeadlines } from './market-intelligence';
 import { marketPrices } from './market-prices';
@@ -504,6 +505,14 @@ async function entryPage(c:import('hono').Context<{Bindings:Bindings}>) {
 }
 app.get('/join',entryPage);
 app.get('/dashboard',entryPage);
+app.on('GET',['/admin','/admin/'],async c=>{
+ const user=await currentUser(c);if(!user)return c.redirect('/join?returnTo=%2Fadmin',303);
+ const reviewer=!!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();
+ const operator=isSimulationAdmin(c.env,user.id);
+ c.header('Content-Security-Policy',"default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+ return c.html(adminPage(reviewer,operator),reviewer||operator?200:403);
+});
+
 app.on('GET',['/dashboard/mirror','/dashboard/mirror/'],async c=>{
  c.header('Cache-Control','private, no-store');
  c.header('X-Robots-Tag','noindex, nofollow');

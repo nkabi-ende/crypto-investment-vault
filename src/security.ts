@@ -65,7 +65,7 @@ export async function secureFetch<E extends SecurityEnv>(request: Request, env: 
     headers.set('Vary', 'Cookie, Origin, Sec-Fetch-Site');
     headers.delete('ETag'); headers.delete('Last-Modified');
   }
-  if (url.pathname.startsWith('/api/admin/') || url.pathname.startsWith('/review-identity') || url.pathname.startsWith('/dashboard')) headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+  if (url.pathname === '/admin' || url.pathname === '/admin/' || url.pathname.startsWith('/api/admin/') || url.pathname.startsWith('/review-identity') || url.pathname.startsWith('/dashboard')) headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
   if (html) {
     if(!headers.has('Content-Security-Policy')) headers.set('Content-Security-Policy', contentSecurityPolicy(nonce,local));
     headers.delete('Content-Length');

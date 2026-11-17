@@ -4,6 +4,7 @@ import {readFile,readdir} from 'node:fs/promises';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {build} from 'esbuild';
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
+import {reviewerSql} from '../scripts/kyc-reviewer.mjs';
 const origin='https://cryptoinvestmentvault.com';let mf,db,member,other,reviewer,operator,sequence=0;const operatorId=randomUUID();
 before(async()=>{
  const result=await build({entryPoints:['src/index.ts'],bundle:true,write:false,format:'esm',platform:'node',external:['node:crypto']});
@@ -57,6 +58,32 @@ test('reviewer HTML, aliases, scripts and API deny anonymous and ordinary member
  }
  assert.equal(await status('/review-identity.js'),401);assert.equal(await status('/review-identity.js',{actor:member}),403);assert.equal(await status('/review-identity.js',{actor:reviewer}),200);
  assert.equal(await status('/api/admin/kyc'),401);assert.equal(await status('/api/admin/kyc',{actor:reviewer}),200);
+});
+
+test('branded admin entry requires a session and renders only links permitted by the separate roles',async()=>{
+ for(const path of ['/admin','/admin/']){
+  const guest=await call(path);assert.equal(guest.status,303);assert.equal(guest.headers.get('location'),'/join?returnTo=%2Fadmin');await guest.text();
+  for(const [actor,code,title] of [[member,403,'Access required.'],[reviewer,200,'Vault control.'],[operator,200,'Vault control.']]){
+   const response=await call(path,{actor}),html=await response.text();assert.equal(response.status,code);assert.ok(html.includes(title));assert.match(html,/src="\/civ-mark.svg"/);assert.match(html,/href="\/favicon.svg"/);assert.match(html,/href="\/admin.css"/);
+   assert.equal(html.includes('href="/review-identity"'),actor===reviewer);assert.equal(html.includes('href="/dashboard/mirror"'),actor===operator);
+   assert.doesNotMatch(html,/<script|security-member@example|security-reviewer@example|security-operator@example/);
+   for(const header of ['Cache-Control','CDN-Cache-Control','Cloudflare-CDN-Cache-Control'])assert.equal(response.headers.get(header),'no-store');
+   assert.match(response.headers.get('content-security-policy'),/default-src 'none'/);assert.equal(response.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
+  }
+ }
+});
+
+test('manual reviewer assignment accepts only an existing exact UUID, records the actor and supports revocation',async()=>{
+ const id=randomUUID();await db.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,'access-workflow@example.invalid','unused','unused').run();
+ for(const invalid of ['admin','email@example.invalid',id+"'; DROP TABLE users; --",''])assert.throws(()=>reviewerSql('grant',invalid));
+ assert.throws(()=>reviewerSql('delete',id));
+ async function apply(action,userId,actor){for(const statement of reviewerSql(action,userId,actor).split('\n'))await db.prepare(statement).run()}
+ const label="operator'; DROP TABLE users; --";
+ await apply('grant',id,label);let row=await db.prepare('SELECT enabled,granted_by FROM kyc_reviewers WHERE user_id=?').bind(id).first();assert.equal(row.enabled,1);assert.equal(row.granted_by,label);
+ await apply('revoke',id,'isolated test');row=await db.prepare('SELECT enabled FROM kyc_reviewers WHERE user_id=?').bind(id).first();assert.equal(row.enabled,0);
+ assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM audit_events WHERE user_id=? AND event_type IN (?,?)').bind(id,'kyc_reviewer_grant','kyc_reviewer_revoke').first()).n,2);
+ const missing=randomUUID();await apply('grant',missing,'isolated test');assert.equal(await db.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=?').bind(missing).first(),null);
+ assert.equal(await db.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=?').bind(member.id).first(),null);
 });
 
 test('cross-origin, missing-origin, same-site forged writes and content-type confusion are rejected',async()=>{
