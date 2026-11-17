@@ -20,3 +20,11 @@ SELECT id,user_id,event_type,status,attempts,available_at,lease_until,sent_at,pr
 DROP TABLE email_outbox;
 ALTER TABLE email_outbox_v2 RENAME TO email_outbox;
 CREATE INDEX idx_email_outbox_ready ON email_outbox(status,available_at);
+
+-- Server/database inserts, including provisioned accounts, get exactly one event.
+-- The trigger runs in the same transaction as the user insert and rolls back with it.
+CREATE TRIGGER queue_signup_alert_after_user_insert AFTER INSERT ON users
+BEGIN
+ INSERT OR IGNORE INTO email_outbox(id,user_id,event_type,available_at)
+ VALUES(lower(hex(randomblob(16))),NEW.id,'account.signup.alert.v1',CAST(strftime('%s','now') AS INTEGER)*1000);
+END;
