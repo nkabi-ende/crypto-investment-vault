@@ -177,7 +177,6 @@ app.post('/api/auth/register',async c=>{
   c.env.DB.prepare('INSERT INTO account_profiles(user_id,display_name,terms_version) VALUES(?,?,?)').bind(id,name,termsVersion),
   c.env.DB.prepare('INSERT INTO referral_codes(code,user_id) VALUES(?,?)').bind(id,id),
   c.env.DB.prepare('INSERT INTO email_outbox(id,user_id,event_type,available_at) VALUES(?,?,?,?)').bind(crypto.randomUUID(),id,'account.welcome.v1',Date.now()),
-  c.env.DB.prepare('INSERT INTO email_outbox(id,user_id,event_type,available_at) VALUES(?,?,?,?)').bind(crypto.randomUUID(),id,'account.signup.alert.v1',Date.now()),
   c.env.DB.prepare('INSERT INTO audit_events(id,user_id,event_type) VALUES(?,?,?)').bind(crypto.randomUUID(),id,'registered')
  ];
  if(attributedCode)writes.push(c.env.DB.prepare('INSERT INTO referral_attributions(user_id,code) VALUES(?,?)').bind(id,attributedCode));
