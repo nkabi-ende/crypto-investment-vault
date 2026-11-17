@@ -1,5 +1,6 @@
 import { pbkdf2Sync } from 'node:crypto';
 import { Hono } from 'hono';
+import { secureFetch,sessionCookieName } from './security';
 import { bodyLimit } from 'hono/body-limit';
 import { deliverEmails } from './email';
 import { membership } from './membership';
@@ -14,7 +15,7 @@ import { marketPrices } from './market-prices';
 import { marketYtd } from './market-ytd';
 import { paymentConfig,pilotAllowed,mainnetPreflight,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-type Bindings = PaymentEnv & { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
+type Bindings = PaymentEnv & { API_LIMITER: RateLimit; AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
 type SimulationBindings = Bindings & { SHAKA_SIM_ADMIN_IDS?: string };
 const app = new Hono<{Bindings:SimulationBindings}>();
 app.onError((error,c)=>{console.error('CIV request failed',c.req.path,error instanceof Error ? error.name : 'UnknownError');return c.json({error:'Account service temporarily unavailable. Please try again.'},503)});
@@ -25,7 +26,8 @@ const b64 = (bytes:Uint8Array)=> btoa(String.fromCharCode(...bytes)).replace(/\+
 const rand = (n=32)=>b64(crypto.getRandomValues(new Uint8Array(n)));
 async function digest(s:string){return b64(new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(s))))}
 async function passwordHash(password:string,salt:string) {
- // Preserve the existing PBKDF2 digest format across Worker runtimes.
+ // Version 3 uses standard PBKDF2-HMAC-SHA256. Older digests upgrade after a valid login.
+ if (salt.startsWith('v3:')) return b64(pbkdf2Sync(password,salt,600000,32,'sha256'));
  if (!salt.startsWith('v2:')) return b64(pbkdf2Sync(password,salt,310000,32,'sha256'));
  let material = enc.encode(password);
  for (let round=0; round<3; round++) {
@@ -36,19 +38,39 @@ async function passwordHash(password:string,salt:string) {
  return b64(material);
 }
 function same(a:string,b:string){if(a.length!==b.length)return false;let diff=0;for(let i=0;i<a.length;i++)diff|=a.charCodeAt(i)^b.charCodeAt(i);return diff===0}
-async function currentUser<E extends {Bindings:Bindings}>(c:import('hono').Context<E>){const token=getCookie(c,'civ_session');if(!token)return null;const hash=await digest(token);return await c.env.DB.prepare('SELECT users.id, users.email FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.id_hash=? AND sessions.expires_at>?').bind(hash,Date.now()).first<{id:string,email:string}>()}
+type Member = {id:string,email:string};
+const memberRequests = new WeakMap<Request,Promise<Member|null>>();
+function currentUser<E extends {Bindings:Bindings}>(c:import('hono').Context<E>):Promise<Member|null>{
+ const cached=memberRequests.get(c.req.raw);if(cached)return cached;
+ const resolve=(async()=>{
+  const name=sessionCookieName(c.req.url),rawCookie=c.req.header('Cookie')||'';
+  if(rawCookie.split(';').filter(part=>part.trim().startsWith(name+'=')).length!==1)return null;
+  const token=getCookie(c,name);if(!token||!/^[A-Za-z0-9_-]{32,128}$/.test(token))return null;
+  const hash=await digest(token),now=Date.now();
+  const row=await c.env.DB.prepare(`SELECT u.id,u.email,s.expires_at,s.authenticated_at,s.last_seen_at,
+   EXISTS(SELECT 1 FROM kyc_reviewers r WHERE r.user_id=u.id AND r.enabled=1) AS reviewer
+   FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id_hash=? AND s.security_version=1`).bind(hash).first<Member&{expires_at:number,authenticated_at:number,last_seen_at:number,reviewer:number}>();
+  if(!row)return null;
+  const privileged=row.reviewer||isSimulationAdmin(c.env,row.id);
+  const idle=privileged?15*60000:86400000,absolute=privileged?8*3600000:7*86400000;
+  if(row.expires_at<=now||row.authenticated_at<=0||row.last_seen_at<=0||row.last_seen_at>now+60000||row.authenticated_at>now+60000||now-row.last_seen_at>=idle||now-row.authenticated_at>=absolute)return null;
+  if(now-row.last_seen_at>=60000)await c.env.DB.prepare('UPDATE sessions SET last_seen_at=? WHERE id_hash=? AND last_seen_at<?').bind(now,hash,now).run();
+  return {id:row.id,email:row.email};
+ })();memberRequests.set(c.req.raw,resolve);return resolve;
+}
 async function session(c:import('hono').Context<{Bindings:Bindings}>, id:string, accountWrites:D1PreparedStatement[] = []) {
   const token = rand();
   const lifetimeSeconds = 7 * 86400;
-  const insertSession = c.env.DB.prepare('INSERT INTO sessions(id_hash,user_id,expires_at) VALUES(?,?,?)')
-    .bind(await digest(token), id, Date.now() + lifetimeSeconds * 1000);
-  const oldToken=getCookie(c,'civ_session');
+  const insertSession = c.env.DB.prepare('INSERT INTO sessions(id_hash,user_id,expires_at,security_version,authenticated_at,last_seen_at) VALUES(?,?,?,1,?,?)')
+    .bind(await digest(token), id, Date.now() + lifetimeSeconds * 1000,Date.now(),Date.now());
+  const oldToken=getCookie(c,sessionCookieName(c.req.url));
   const retire=oldToken?[c.env.DB.prepare('DELETE FROM sessions WHERE id_hash=?').bind(await digest(oldToken))]:[];
-  await c.env.DB.batch([...accountWrites,...retire,insertSession]);
-  setCookie(c, 'civ_session', token, {
+  await c.env.DB.batch([...accountWrites,...retire,c.env.DB.prepare('DELETE FROM sessions WHERE user_id=? AND id_hash NOT IN (SELECT id_hash FROM sessions WHERE user_id=? ORDER BY authenticated_at DESC,id_hash LIMIT 4)').bind(id,id),insertSession]);
+  setCookie(c, sessionCookieName(c.req.url), token, {
     httpOnly: true, secure: new URL(c.req.url).protocol === 'https:',
     sameSite: 'Strict', path: '/', maxAge: lifetimeSeconds
   });
+  deleteCookie(c,'civ_session',{path:'/',secure:true,httpOnly:true,sameSite:'Strict'});
 }
 app.use('/api/*',async(c,next)=>{c.header('Cache-Control','no-store');c.header('X-Content-Type-Options','nosniff');c.header('Referrer-Policy','no-referrer');if(c.req.method!=='GET'&&c.req.method!=='HEAD'){const origin=c.req.header('origin');const url=new URL(c.req.url);if(origin&&origin!==url.origin)return c.json({error:'Cross-origin requests are not allowed'},403)}await next()});
 // Reject abusive authentication traffic before password derivation or D1 reads.
@@ -56,6 +78,15 @@ app.use('/api/auth/*',async(c,next)=>{
  if (c.req.method==='POST') {
   const {success}=await c.env.AUTH_LIMITER.limit({key:c.req.header('cf-connecting-ip')||'local'});
   if(!success){c.header('Retry-After','60');return c.json({error:'Too many requests. Please wait a minute.'},429)}
+ }
+ await next();
+});
+// New private routes inherit an authentication boundary even before their handlers run.
+app.use('/api/*',async(c,next)=>{
+ const path=c.req.path;
+ if(path.startsWith('/api/investor/')||path.startsWith('/api/admin/')||path.startsWith('/api/celo/testnet/')||(path.startsWith('/api/payments/')&&path!=='/api/payments/config')){
+  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
+  if(path.startsWith('/api/admin/')){const permitted=path.startsWith('/api/admin/shaka-simulation')?isSimulationAdmin(c.env,user.id):!!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();if(!permitted)return c.json({error:'Administrator access required'},403)}
  }
  await next();
 });
@@ -137,7 +168,7 @@ app.post('/api/auth/register',async c=>{
   const record=await c.env.DB.prepare('SELECT r.code FROM referral_codes r LEFT JOIN referral_aliases a ON a.user_id=r.user_id WHERE (r.code=? OR r.user_id=? OR a.code=?) AND r.user_id IS NOT NULL').bind(referral,referral,referral).first<{code:string}>();
   attributedCode=record?.code||null;
  }
- const id=crypto.randomUUID(),salt='v2:'+rand(16),hash=await passwordHash(password,salt);
+ const id=crypto.randomUUID(),salt='v3:'+rand(16),hash=await passwordHash(password,salt);
  const writes=[
   c.env.DB.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,email,hash,salt),
   c.env.DB.prepare('INSERT INTO portfolios(user_id) VALUES(?)').bind(id),
@@ -167,7 +198,7 @@ app.post('/api/auth/login',async c=>{
  const attempts=await c.env.DB.prepare('SELECT locked_until FROM auth_attempts WHERE email=?').bind(email).first<{locked_until:number}>();
  if(attempts&&attempts.locked_until>now){c.header('Retry-After',String(Math.ceil((attempts.locked_until-now)/1000)));return c.json({error:'Too many attempts. Try again later.'},429)}
  const user=await c.env.DB.prepare('SELECT id,email,password_hash,salt FROM users WHERE email=?').bind(email).first<{id:string,email:string,password_hash:string,salt:string}>();
- const check=await passwordHash(password,user?.salt||'v2:fallback');
+ const check=await passwordHash(password,user?.salt||'v3:fallback');
  if(!user||!same(check,user.password_hash)){
   await c.env.DB.prepare(`INSERT INTO auth_attempts(email,attempts,window_start,locked_until) VALUES(?,1,?,0)
    ON CONFLICT(email) DO UPDATE SET
@@ -177,10 +208,12 @@ app.post('/api/auth/login',async c=>{
    .bind(email,now,now-900000,now-900000,now+900000,now-900000,now).run();
   return c.json({error:'Invalid credentials'},401);
  }
- await session(c,user.id,[c.env.DB.prepare('DELETE FROM auth_attempts WHERE email=?').bind(email)]);
+ const writes=[c.env.DB.prepare('DELETE FROM auth_attempts WHERE email=?').bind(email)];
+ if(!user.salt.startsWith('v3:')){const salt='v3:'+rand(16);writes.push(c.env.DB.prepare('UPDATE users SET password_hash=?,salt=? WHERE id=? AND password_hash=?').bind(await passwordHash(password,salt),salt,user.id,user.password_hash))}
+ await session(c,user.id,writes);
  return c.json({user:{id:user.id,email:user.email}});
 });
-app.post('/api/auth/logout',async c=>{const token=getCookie(c,'civ_session');if(token)await c.env.DB.prepare('DELETE FROM sessions WHERE id_hash=?').bind(await digest(token)).run();deleteCookie(c,'civ_session',{path:'/'});return c.json({ok:true})});
+app.post('/api/auth/logout',async c=>{const token=getCookie(c,sessionCookieName(c.req.url));if(token)await c.env.DB.prepare('DELETE FROM sessions WHERE id_hash=?').bind(await digest(token)).run();deleteCookie(c,sessionCookieName(c.req.url),{path:'/',secure:new URL(c.req.url).protocol==='https:',httpOnly:true,sameSite:'Strict'});deleteCookie(c,'civ_session',{path:'/',secure:true,httpOnly:true,sameSite:'Strict'});return c.json({ok:true})});
 app.get('/api/me',async c=>{const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);const portfolio=await c.env.DB.prepare('SELECT cash_usdt,updated_at FROM portfolios WHERE user_id=?').bind(user.id).first();return c.json({user,portfolio,fundingEnabled:false,product:'The Big 7'})});
 app.get('/api/investor/overview',async c=>{
   const user=await currentUser(c);
@@ -446,14 +479,16 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT user_id,status,revision FROM kyc_submissions LIMIT 0'),
   c.env.DB.prepare('SELECT document_id,part,body FROM kyc_document_chunks LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,enabled FROM kyc_reviewers LIMIT 0'),
-  c.env.DB.prepare('SELECT user_id,idempotency_key FROM withdrawal_requests LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,idempotency_key FROM withdrawal_requests LIMIT 0')
+,
   c.env.DB.prepare('SELECT user_id,starts_on FROM shaka_sim_members LIMIT 0'),
   c.env.DB.prepare('SELECT id,starts_on,rates_json FROM shaka_sim_schedules LIMIT 0'),
   c.env.DB.prepare('SELECT trading_day,schedule_id,rate_bps FROM shaka_sim_closes LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,receipt_id,starts_on FROM shaka_sim_activations LIMIT 0'),
-  c.env.DB.prepare('SELECT user_id,terms_version,accepted_at FROM affiliate_consents LIMIT 0')
+  c.env.DB.prepare('SELECT user_id,terms_version,accepted_at FROM affiliate_consents LIMIT 0'),
+  c.env.DB.prepare('SELECT security_version,authenticated_at,last_seen_at FROM sessions LIMIT 0')
  ]);
- return c.json({ready:true,schema:20,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:21,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
@@ -489,7 +524,21 @@ app.get('/r/:code',async c=>{
  }
  return entryPage(c);
 });
-export default {fetch:app.fetch, scheduled(event:ScheduledController,env:SimulationBindings,ctx:ExecutionContext){
+// Reviewer HTML and its script are private resources, including extensionless aliases.
+app.get('/review-identity*',async c=>{
+ const path=c.req.path;
+ if(!['/review-identity','/review-identity/','/review-identity.html','/review-identity.js'].includes(path))return c.text('Not found',404);
+ const user=await currentUser(c);if(!user)return path.endsWith('.js')?c.text('Unauthorized',401):c.redirect('/join',303);
+ if(!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first())return c.text('Access denied',403);
+ const target=path.endsWith('.js')?'/review-identity.js':'/review-identity';
+ return c.env.ASSETS.fetch(new Request(new URL(target,c.req.url)));
+});
+app.get('*',async c=>{
+ const headers=new Headers(c.req.raw.headers);
+ if(!/\.(?:js|css|svg|png|ico|xml|txt)$/.test(c.req.path)){headers.delete('If-None-Match');headers.delete('If-Modified-Since')}
+ return c.env.ASSETS.fetch(new Request(c.req.raw,{headers}));
+});
+export default {fetch:(request:Request,env:SimulationBindings,ctx:ExecutionContext)=>secureFetch(request,env,ctx,(r,e,x)=>app.fetch(r,e,x)), scheduled(event:ScheduledController,env:SimulationBindings,ctx:ExecutionContext){
  ctx.waitUntil(closeShakaSimulation(env.DB,new Date(event.scheduledTime)));
  ctx.waitUntil(reconcile(env).catch(()=>console.error('Testnet reconciliation unavailable')));
  ctx.waitUntil(deliverEmails(env));

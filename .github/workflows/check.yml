@@ -15,6 +15,8 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Check dependency security advisories
+        run: npm audit --audit-level=high
       - run: npm run check
       - name: Bundle Worker locally without hosting access
         run: node --input-type=module -e "const {build}=await import('esbuild');const r=await build({entryPoints:['src/index.ts'],bundle:true,write:false,format:'esm',platform:'node',external:['node:crypto']});console.log('Worker bundle bytes:',r.outputFiles[0].contents.length)"
