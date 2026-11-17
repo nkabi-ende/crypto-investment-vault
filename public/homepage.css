@@ -1,0 +1,73 @@
+/* A single editorial overview replaces the three introductory cards. */
+.vault-overview{margin:0 0 48px;border-block:1px solid #3a493d;min-width:0}
+.vault-overview-heading{display:flex;justify-content:space-between;gap:12px;padding:16px 0;color:#b5f269;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.12em}
+.vault-overview-heading>span:last-child{color:#7f9187;letter-spacing:.04em}
+.vault-overview-body{display:grid;grid-template-columns:1.4fr 1fr;border-top:1px solid #28392e}
+.vault-overview-assets,.vault-overview-deposit{display:flex;flex-direction:column;align-items:flex-start;min-width:0;padding:27px 30px 28px 0;transition:background .2s}
+.vault-overview-deposit{border-left:1px solid #28392e;padding-left:32px;background:radial-gradient(ellipse at 90% 90%,#b5f26909,transparent 70%)}
+.vault-overview-label{display:block;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;color:#a1afa8;letter-spacing:.025em}
+.vault-overview-asset-title{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;margin:14px 0 16px}
+.vault-overview-asset-title strong{font-size:clamp(32px,4vw,46px);font-weight:650;letter-spacing:-.06em;line-height:1.1}
+.vault-overview-asset-title strong>span{color:#b5f269}
+.vault-overview-arrow{font-size:22px;font-weight:400;color:#b5f269;transition:transform .2s}
+.vault-overview-arrow svg{display:block;width:22px;height:22px}.vault-overview-inline-arrow svg{display:inline-block;width:12px;height:12px;vertical-align:middle;margin-left:3px;color:#b5f269}
+.vault-overview-coins{display:flex;align-items:center;padding-left:0;margin-bottom:14px;isolation:isolate}
+.vault-overview-coins img{display:block;width:36px;height:36px;border:3px solid #0b1011;border-radius:50%;background:#0b1011;box-sizing:content-box}
+.vault-overview-coins img+img{margin-left:-9px}
+.vault-overview-caption{display:block;font-size:12px;line-height:1.7;color:#a1afa8}
+.vault-overview-amount{display:block;font-size:clamp(64px,8vw,88px);font-weight:550;line-height:1;letter-spacing:-.075em;margin:18px 0 21px;font-variant-numeric:tabular-nums}
+.vault-overview-amount>span{font-size:.46em;vertical-align:top;display:inline-block;margin-top:.16em;margin-right:3px;color:#b5f269}
+.vault-overview-access{display:flex;align-items:center;gap:15px;border-top:1px solid #28392e;padding:20px 0}
+.vault-overview-access-icon{display:grid;place-items:center;width:36px;height:36px;border:1px solid #354b39;border-radius:50%;color:#b5f269;flex-shrink:0}
+.vault-overview-access-icon svg{width:19px;height:19px}
+.vault-overview-access>span:nth-child(2){flex:1;min-width:0}
+.vault-overview-access-copy{display:block;margin-top:4px;font-size:13px;line-height:1.5;color:#d8e2da}
+.vault-overview a:focus-visible{outline:2px solid #b5f269;outline-offset:4px}
+@media(hover:hover){.vault-overview a:hover{background-color:#b5f26905}.vault-overview a:hover .vault-overview-arrow{transform:translate(2px,-2px)}}
+.vault-updates{scroll-margin-top:100px}
+.vault-updates-heading{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin-bottom:28px}
+.vault-updates-heading h2{margin-bottom:0;max-width:650px}
+.vault-updates-caption{color:#7f9187;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap;padding-bottom:5px}
+.vault-updates-grid{display:grid;grid-template-columns:1fr 1fr;gap:36px}
+.vault-update-column{min-width:0;border-top:1px solid #465a43;padding:22px 0 12px}
+.vault-update-heading{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+.vault-update-index{color:#b5f269;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+.vault-update-heading h3{font-size:18px;font-weight:600;letter-spacing:-.025em;margin:0}
+.vault-update-empty{color:#a1afa8;font-size:14px;line-height:1.8;margin:0;max-width:44ch}
+.vault-update-entry{padding:18px 0;border-top:1px solid #28392e;overflow-wrap:anywhere}
+.vault-update-entry:first-child{border-top:0;padding-top:0}
+.vault-update-entry time,.vault-update-verifier{font-size:11px;color:#a1afa8;line-height:1.7}
+.vault-update-entry h4{font-size:16px;font-weight:600;line-height:1.5;margin:8px 0}
+.vault-update-entry p{font-size:14px;line-height:1.8;color:#a1afa8;margin:8px 0;white-space:pre-line}
+.vault-history-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:16px 0}
+.vault-history-stats dt{font-size:10px;color:#a1afa8;line-height:1.6}
+.vault-history-stats dd{margin:5px 0 0;font-size:18px;font-variant-numeric:tabular-nums;letter-spacing:-.04em}
+.vault-update-evidence{display:inline-flex;align-items:center;min-height:44px;color:#b5f269;font-size:12px;text-decoration:underline;text-underline-offset:4px}
+.vault-update-evidence:focus-visible{outline:2px solid #b5f269;outline-offset:4px}
+.vault-updates-note{font-size:11px;line-height:1.7;color:#7f9187;border-top:1px solid #28392e;margin:20px 0 0;padding-top:16px}
+@media(max-width:600px){
+ .vault-overview{margin-top:10px;margin-bottom:36px}
+ .vault-overview-heading{font-size:9px;padding:13px 0}
+ .vault-overview-body{grid-template-columns:1.15fr 1fr}
+ .vault-overview-assets,.vault-overview-deposit{padding:22px 16px 22px 0}
+ .vault-overview-deposit{padding-left:20px;padding-right:0}
+ .vault-overview-label{font-size:9px;letter-spacing:0}
+ .vault-overview-asset-title{margin:16px 0 14px;gap:8px}
+ .vault-overview-asset-title strong{font-size:31px}
+ .vault-overview-asset-title .vault-overview-arrow svg{width:17px;height:17px}
+ .vault-overview-coins{margin-bottom:12px}
+ .vault-overview-coins img{width:24px;height:24px;border-width:2px}
+ .vault-overview-coins img+img{margin-left:-9px}
+ .vault-overview-caption{font-size:10px;line-height:1.7}
+ .vault-overview-amount{font-size:61px;margin:21px 0 24px}
+ .vault-overview-access{gap:12px;padding:17px 0}
+ .vault-overview-access-copy{font-size:11px;max-width:32ch}
+ .vault-updates-heading{margin-bottom:24px}
+ .vault-updates-caption{display:none}
+ .vault-updates-grid{grid-template-columns:minmax(0,1fr);gap:22px}
+ .vault-update-column{padding-top:20px}
+ .vault-update-heading{margin-bottom:14px}
+ .vault-update-empty{font-size:13px}
+}
+@media(max-width:350px){.vault-overview-deposit{padding-left:15px}.vault-overview-asset-title strong{font-size:27px}.vault-overview-coins img{width:21px;height:21px}.vault-overview-amount{font-size:55px}}
+@media(prefers-reduced-motion:reduce){.vault-overview a,.vault-overview-arrow{transition:none}}
