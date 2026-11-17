@@ -44,7 +44,7 @@ Migration `0003_transparency.sql` adds:
 - `strategy_performance`: historical performance records requiring a verification URL and verifier before appearing publicly
 - `platform_announcements`: published operational updates
 
-`GET /api/transparency` powers the website's public disclosure register. Empty categories explicitly show **Not published**. The database is initially empty: no regulatory status, audit, custody arrangement, strategy track record or team credential is invented.
+`GET /api/transparency` supplies the homepage journal's announcements and verified history. The homepage no longer displays the category disclosure register; category records remain available in the API for compatibility. Empty and unavailable records have separate states, and published performance includes its verification source. No regulatory status, audit, custody arrangement, strategy track record or team credential is invented.
 
 **Publishing policy:** No public admin editing interface exists yet. Publish records only through a controlled, audited operational workflow after verifying evidence. This endpoint alone does not validate the authenticity of external verification links. Do not expose direct D1 write access or use the presence of a record as proof of compliance. An authenticated, role-restricted publishing workflow with approval history is a remaining production task.
 
