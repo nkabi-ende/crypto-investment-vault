@@ -69,7 +69,7 @@ test('invalid attribution is ignored, expired sessions fail and members get a st
  await db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').bind(made.data.user.id).run();assert.equal((await call('/api/me',{cookie:made.cookie})).r.status,401);
 });
 test('readiness validates required schema, and payment rails remain correctly disabled',async()=>{
- const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,17);
+ const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,21);
  assert.equal((await call('/api/celo/config')).data.ready,false);
  const made=await call('/api/auth/register',{method:'POST',body:payload('payment@example.com')});
  assert.equal((await call('/api/celo/testnet/intents',{method:'POST',cookie:made.cookie,body:{amountUsd:100,sender:'0x'+'1'.repeat(40)}})).r.status,503);
@@ -135,7 +135,7 @@ test('browser invitation capture rejects campaign tags, expires old links and wo
  assert.equal(evaluate('/join','?ref='+id),id);assert.equal(evaluate('/r/abcdef0123'),id,'First valid invite wins until explicitly corrected');assert.equal(evaluate('/'),id);
 });
 
-test('stablecoin deposits activate membership, preserve token balances and isolate R500 promotion',async()=>{
+test('stablecoin deposits activate membership, preserve token balances and isolate R1,000 promotion',async()=>{
  const built=await build({entryPoints:['src/payments.ts'],bundle:true,write:false,format:'esm',platform:'node'});
  const p=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
  const sender='0x'+'1'.repeat(40),treasury='0x'+'2'.repeat(40),blockHash='0x'+'b'.repeat(64);
@@ -175,7 +175,7 @@ test('stablecoin deposits activate membership, preserve token balances and isola
   for(const amount of [0,50,99,101,500,'100'])await assert.rejects(createQuoteFor(owner.data.user.id,'USDT',sender,amount));
   const first=await createQuoteFor(owner.data.user.id,'USDT',sender,100);assert.equal(first.tokenMinor,'100000000');assert.equal(first.purpose,'funding');assert.equal(first.amount,100);q=await stored(first);assert.equal(q.expires_at-q.created_at,300000);assert.equal((await createQuoteFor(owner.data.user.id,'USDT',sender,100)).id,first.id);
   final=99;assert.equal((await p.verifyQuote(env,q,hash)).status,'pending');assert.equal((await onboard(owner)).activated,false);await assert.rejects(createQuoteFor(owner.data.user.id,'USDC',sender,200),/awaiting verification/);
-  final=100;assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');let state=await onboard(owner);assert.equal(state.activated,true);assert.deepEqual(state.balances,[{asset:'USDT',amountMinor:100000000}]);assert.equal(state.promotion.amountMinor,50000);assert.equal(state.promotion.status,'pending_terms');assert.equal(state.promotion.withdrawable,false);
+  final=100;assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');let state=await onboard(owner);assert.equal(state.activated,true);assert.deepEqual(state.balances,[{asset:'USDT',amountMinor:100000000}]);assert.equal(state.promotion.amountMinor,100000);assert.equal(state.promotion.status,'pending_terms');assert.equal(state.promotion.withdrawable,false);
   const second=await createQuoteFor(other.data.user.id,'USDC',sender,200);const secondQ=await stored(second);assert.equal((await p.verifyQuote(env,secondQ,hash)).status,'mismatch');
   assert.equal((await call('/api/payments/quotes/'+first.id+'/verify',{method:'POST',cookie:other.cookie,body:{txHash:hash}})).r.status,404);
   q=secondQ;hash='0x'+'c'.repeat(64);late=true;assert.equal((await p.verifyQuote(env,q,hash)).status,'review');assert.equal((await onboard(other)).activated,false);late=false;
@@ -259,7 +259,6 @@ test('calendar YTD uses January 1 history, shared leases, cached baselines and h
   await seed();
  }finally{globalThis.fetch=prior}
 });
-
 
 test('successful legacy logins atomically upgrade both older password formats to standard PBKDF2',async()=>{
  const password='isolated legacy migration passphrase';

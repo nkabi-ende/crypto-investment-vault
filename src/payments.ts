@@ -96,7 +96,6 @@ export async function verifyQuote(env:PaymentEnv,q:any,hash:string){
  if(q.chain_id===42220){
   writes.push(env.DB.prepare(`INSERT INTO funding_receipts(id,user_id,asset,amount_minor,chain_id,tx_hash,settled_at)
    SELECT id,user_id,symbol,funding_minor,chain_id,?,? FROM payment_quotes WHERE id=? AND status='verified' AND purpose='funding' AND tx_hash=? ON CONFLICT(tx_hash) DO NOTHING`).bind(hash,new Date(paidAt).toISOString(),q.id,hash));
-  writes.push(env.DB.prepare(`INSERT OR IGNORE INTO deposit_promotions(user_id,qualifying_receipt) SELECT user_id,id FROM funding_receipts WHERE id=?`).bind(q.id));
   writes.push(env.DB.prepare("INSERT INTO audit_events(id,user_id,event_type,detail) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING").bind('deposit:'+q.id,q.user_id,'funding_verified',JSON.stringify({quoteId:q.id,chainId:q.chain_id,txHash:hash,asset:q.symbol,amountMinor:q.token_minor})));
 
  }

@@ -19,6 +19,7 @@ export async function membership(db:D1Database,userId:string) {
  const required=a?.required_minor??100000000,settled=a?.settled_minor??0,active=a?.active===1;
  const reward=rewards.results[0] as {credited:number,suspended:number,pending:number};
  const counts=referrals.results[0] as {registrations:number,qualified:number};
+ const promotion=promo.results[0] as {amount_minor:number,status:string}|undefined;
  return {
   deposit:{currency:'USDC_OR_USDT',requiredMinor:required,settledMinor:settled,remainingMinor:Math.max(0,required-settled),
    status:active?'settled':settled>0?'partially_paid':'awaiting_payment',collectionEnabled:false},
@@ -26,7 +27,7 @@ export async function membership(db:D1Database,userId:string) {
   invitationCode:(alias.results[0] as {code:string}).code,
   referralWallet:{currency:'ZAR',amountMinor:Number(reward.credited),suspendedMinor:Number(reward.suspended),pendingMinor:Number(reward.pending),rewardMinor:20000,rewardMaxMinor:40000,withdrawable:false},
   balances:balances.results.map((x:any)=>({asset:x.asset,amountMinor:x.amount_minor})),
-  promotion:promo.results.length?{currency:'ZAR',amountMinor:50000,status:active?(promo.results[0] as {status:string}).status:'ineligible',withdrawable:false}:{currency:'ZAR',amountMinor:50000,status:'requires_deposit',withdrawable:false},
+  promotion:{currency:'ZAR',amountMinor:promotion?.amount_minor??100000,status:promotion?(active?promotion.status:'ineligible'):'requires_deposit',withdrawable:false},
   referral:{registrations:counts.registrations,qualified:counts.qualified,pending:counts.registrations-counts.qualified},
   perks:perks.results.map((p:any)=>({id:p.id,title:p.title,description:p.description,metric:p.metric,
    threshold:p.threshold,progress:p.progress,status:active&&p.progress>=p.threshold?'unlocked':'locked'}))

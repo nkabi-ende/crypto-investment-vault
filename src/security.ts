@@ -58,7 +58,7 @@ export async function secureFetch<E extends SecurityEnv>(request: Request, env: 
   const html = (headers.get('Content-Type') || '').includes('text/html');
   const privateResponse = api || html || url.pathname.startsWith('/review-identity') || response.status >= 300;
   if (privateResponse) {
-    headers.set('Cache-Control', 'no-store');
+    headers.set('Cache-Control', headers.get('Cache-Control')?.includes('private') ? 'private, no-store' : 'no-store');
     headers.set('CDN-Cache-Control', 'no-store');
     headers.set('Cloudflare-CDN-Cache-Control', 'no-store');
     headers.set('Pragma', 'no-cache'); headers.set('Expires', '0');
@@ -67,7 +67,7 @@ export async function secureFetch<E extends SecurityEnv>(request: Request, env: 
   }
   if (url.pathname.startsWith('/api/admin/') || url.pathname.startsWith('/review-identity') || url.pathname.startsWith('/dashboard')) headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
   if (html) {
-    headers.set('Content-Security-Policy', contentSecurityPolicy(nonce,local));
+    if(!headers.has('Content-Security-Policy')) headers.set('Content-Security-Policy', contentSecurityPolicy(nonce,local));
     headers.delete('Content-Length');
     const secured = new Response(response.body, {status: response.status, statusText: response.statusText, headers});
     if (request.method !== 'HEAD' && response.status === 200) return new HTMLRewriter().on('script', {element(element) {element.setAttribute('nonce', nonce)}}).transform(secured);

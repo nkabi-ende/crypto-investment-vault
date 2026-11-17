@@ -1,4 +1,11 @@
 export const circleVersion='circle-2026-11-17';
+export const affiliateConsentVersion='civ-affiliate-v1';
+export async function acceptAffiliateTerms(db:D1Database,userId:string){
+ await db.batch([
+  db.prepare('INSERT INTO affiliate_profiles(user_id) VALUES(?) ON CONFLICT(user_id) DO NOTHING').bind(userId),
+  db.prepare('INSERT INTO affiliate_consents(user_id,terms_version) VALUES(?,?) ON CONFLICT(user_id) DO NOTHING').bind(userId,affiliateConsentVersion)
+ ]);
+}
 export const circleRates={circle:{100:20000,200:30000},gold:{100:22500,200:35000},platinum:{100:25000,200:40000}} as const;
 type Tier=keyof typeof circleRates;
 export function tierFor(count:number):Tier{return count>=15?'platinum':count>=5?'gold':'circle'}
@@ -11,12 +18,14 @@ export function capitalBand(count:number,units:number){
  return '10,000+ units';
 }
 export async function affiliateSummary(db:D1Database,userId:string){
- const [profile,tier,items,legacy,capital]=await db.batch([
+ const [profile,tier,items,legacy,capital,consent,registrations]=await db.batch([
   db.prepare('SELECT public_alias,joined_at FROM affiliate_profiles WHERE user_id=?').bind(userId),
   db.prepare('SELECT qualified_90d,tier FROM circle_tiers WHERE user_id=?').bind(userId),
   db.prepare('SELECT receipt_id,amount_minor,tier,account_usd,version,status,created_at,eligible_at,paid_at,review_reason FROM circle_wallet WHERE user_id=? ORDER BY created_at DESC,receipt_id LIMIT 100').bind(userId),
   db.prepare('SELECT amount_minor,status,created_at FROM referral_wallet WHERE user_id=? ORDER BY created_at DESC').bind(userId),
-  db.prepare('SELECT asset,SUM(introduced_minor) AS amount_minor FROM circle_qualified_customers WHERE user_id=? GROUP BY asset').bind(userId)
+  db.prepare('SELECT asset,SUM(introduced_minor) AS amount_minor FROM circle_qualified_customers WHERE user_id=? GROUP BY asset').bind(userId),
+  db.prepare('SELECT terms_version,accepted_at FROM affiliate_consents WHERE user_id=?').bind(userId),
+  db.prepare('SELECT COUNT(*) AS total FROM referral_attributions a JOIN referral_codes r ON r.code=a.code WHERE r.user_id=?').bind(userId)
  ]);
  const t=tier.results[0] as {qualified_90d:number,tier:Tier}|undefined;
  const current=t?.tier||'circle',qualified=t?.qualified_90d||0,next=current==='circle'?5:current==='gold'?15:null;
@@ -27,12 +36,14 @@ export async function affiliateSummary(db:D1Database,userId:string){
  const historical={credited:0,suspended:0};
  for(const row of legacy.results as any[])historical[row.status as keyof typeof historical]+=Number(row.amount_minor);
  return {version:circleVersion,publication:'automatic_public_alias',profile:profile.results[0]||null,tier:current,
+  consentVersion:affiliateConsentVersion,consent:consent.results[0]||null,
+  registrations:(registrations.results[0] as {total:number}).total,
   qualified90d:qualified,nextTier:next===5?'gold':next===15?'platinum':null,nextThreshold:next,remaining:next===null?0:Math.max(0,next-qualified),
   rates:circleRates[current],tiers:circleRates,validationDays:30,payoutSchedule:'Monthly after validation and settlement approval',
   currency:'ZAR',amounts,legacy:historical,withdrawable:false,
   capitalIntroduced:capital.results.map((r:any)=>({asset:r.asset,amountMinor:Number(r.amount_minor)})),
   rewards:items.results.map((r:any)=>({reference:r.receipt_id,amountMinor:r.amount_minor,accountUsd:r.account_usd,tier:r.tier,version:r.version,status:r.status,createdAt:r.created_at,eligibleAt:r.eligible_at,paidAt:r.paid_at,reviewReason:r.review_reason})),
-  customerBonusMinor:50000,accountOptionsUsd:[100,200]};
+  customerBonusMinor:100000,accountOptionsUsd:[100,200]};
 }
 export async function leaderboard(db:D1Database,period:'month'|'all'|'newcomers'){
  const result=await db.prepare(`SELECT p.public_alias,t.tier,COUNT(q.referred_user_id) AS qualified,
