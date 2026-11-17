@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 const origin=process.env.CIV_ORIGIN||'https://cryptoinvestmentvault.com';
 async function json(path){const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);return r.json()}
 const status=await json('/api/status');assert.equal(status.release,'stablecoin-funding-v4');assert.equal(status.fundingEnabled,false);assert.equal(status.liveTradingEnabled,false);assert.equal(status.membershipDepositsEnabled,false);assert.equal(status.pilotOnly,true);
-const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,16);
+const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,17);
 for(const path of ['/join']){
  const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes('id="authForm"'));assert.ok(html.includes('id="vaultLoader"'));assert.ok(html.includes('class="site-footer"'));assert.ok(html.includes('/civ-mark.svg'));assert.ok(html.includes('og-invitation-v3.png'));assert.ok(html.includes('Choose a $100 or $200 account'));assert.doesNotMatch(html.split('</head>')[0],/R1,000/);assert.ok(html.includes('id="shaka-strategy"'));assert.ok(html.includes('id="circle-leaderboard"'));assert.doesNotMatch(html,/id="asset-guide"|href="#asset-guide"/);
  assert.ok(html.includes('id="minipay-start"'),'MiniPay education must be present on signup entry');
@@ -57,6 +57,20 @@ assert.deepEqual(payments.supportedTokens,['USDT','USDC']);
 assert.deepEqual(payments.depositPresets,[100,200]);
 assert.equal(ready.liveDepositsEnabled,false);
 const preflight=await fetch(new URL('/api/payments/preflight',origin));assert.equal(preflight.status,401,'Mainnet diagnostics must be private');
-const anonymousQuote=await fetch(new URL('/api/payments/quotes',origin),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:'USDC',amount:100,sender:'0x'+'1'.repeat(40)})});assert.equal(anonymousQuote.status,401,'Anonymous users cannot create mainnet quotes');
+const anonymousQuote=await fetch(new URL('/api/payments/quotes',origin),{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({symbol:'USDC',amount:100,sender:'0x'+'1'.repeat(40)})});assert.equal(anonymousQuote.status,401,'Anonymous users cannot create mainnet quotes');
 const celo=await json('/api/celo/config');assert.equal(celo.liveDepositsEnabled,false);assert.equal(celo.livePayoutsEnabled,false);
-console.log('CIV production checks passed: schema 16, signup and referral HTML, PNG preview, private API boundaries, pilot-only production deposits, public collection disabled, trading and withdrawals off.');
+console.log('CIV production checks passed: schema 17, signup and referral HTML, PNG preview, private API boundaries, pilot-only production deposits, public collection disabled, trading and withdrawals off.');
+
+
+for(const path of ['/','/dashboard']){
+ const response=await fetch(new URL(path,origin)),html=await response.text();assert.equal(response.status,200);
+ for(const header of ['Cache-Control','CDN-Cache-Control','Cloudflare-CDN-Cache-Control'])assert.equal(response.headers.get(header),'no-store',path+' '+header);
+ assert.equal(response.headers.get('X-Frame-Options'),'DENY');assert.equal(response.headers.get('X-Content-Type-Options'),'nosniff');assert.ok(response.headers.get('Strict-Transport-Security'));
+ const policy=response.headers.get('Content-Security-Policy');assert.match(policy,/frame-ancestors 'none'/);assert.match(policy,/script-src-attr 'none'/);const nonce=/script-src 'nonce-([^']+)'/.exec(policy)?.[1];assert.ok(nonce);
+ for(const script of html.matchAll(/<script\b[^>]*>/g))assert.ok(script[0].includes('nonce="'+nonce+'"'));
+}
+for(const path of ['/api/investor/kyc','/api/investor/withdrawals','/api/admin/kyc','/review-identity.js']){const response=await fetch(new URL(path,origin));assert.equal(response.status,401,path);assert.equal(response.headers.get('Cache-Control'),'no-store');await response.text()}
+const review=await fetch(new URL('/review-identity.html',origin),{redirect:'manual'});assert.equal(review.status,303);assert.equal(review.headers.get('location'),'/join');await review.text();
+for(const path of ['/.env','/src/index.ts','/index.html.map']){const response=await fetch(new URL(path,origin));assert.equal(response.status,404);await response.text()}
+const csrf=await fetch(new URL('/api/auth/logout',origin),{method:'POST',headers:{Origin:'https://untrusted.invalid'}});assert.equal(csrf.status,403);await csrf.text();
+console.log('Security checks passed: enforced script nonces, private cache boundaries, protected reviewer resources, source artifacts blocked and cross-origin writes refused.');

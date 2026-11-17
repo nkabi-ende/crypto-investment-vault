@@ -22,7 +22,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
       - name: Validate account and database behavior
-        run: npm run check
+        run: |
+          npm audit --audit-level=high
+          npm run check
       - name: Generate Open Graph and favicon PNG assets
         run: |
           python -m pip install --disable-pip-version-check Pillow==11.3.0 CairoSVG==2.9.1

@@ -1,4 +1,5 @@
 import { test, before, after } from 'node:test';
+import {pbkdf2Sync,randomUUID} from 'node:crypto';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { build } from 'esbuild';
@@ -7,7 +8,7 @@ let mf, db;
 const origin='https://cryptoinvestmentvault.com';
 before(async()=>{
  const result=await build({entryPoints:['src/index.ts'],bundle:true,write:false,format:'esm',platform:'node',target:'es2022',external:['node:crypto']});
- mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'civ-test',modules:true,script:result.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:20,period:60}}},assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:['/api/*','/join','/dashboard','/r/*']},bindings:{APP_ORIGIN:origin,EMAIL_DELIVERY_ENABLED:'false'}}]}));
+ mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'civ-test',modules:true,script:result.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{API_LIMITER:{namespace_id:'1424211761',simple:{limit:1000,period:60}},AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:20,period:60}}},assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:true},bindings:{APP_ORIGIN:origin,EMAIL_DELIVERY_ENABLED:'false'}}]}));
  db=await mf.getD1Database('DB');
  for(const file of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort()){
   const sql=(await readFile('migrations/'+file,'utf8')).replace(/--[^\n]*/g,'');
@@ -25,7 +26,7 @@ before(async()=>{
 after(async()=>{await mf?.dispose()});
 let ip=1;
 async function call(path,{body,cookie,method='GET',headers={},address}={}){
- const r=await mf.dispatchFetch(origin+path,{method,headers:{'cf-connecting-ip':address||`192.0.2.${ip++}`,...(body?{'Content-Type':'application/json'}:{}),...(cookie?{Cookie:cookie}:{}),...headers},...(body?{body:JSON.stringify(body)}:{})});
+ const r=await mf.dispatchFetch(origin+path,{method,headers:{Origin:origin,'cf-connecting-ip':address||`192.0.2.${ip++}`,...(body?{'Content-Type':'application/json'}:{}),...(cookie?{Cookie:cookie}:{}),...headers},...(body?{body:JSON.stringify(body)}:{})});
  const raw=await r.text();if(!raw.startsWith('{'))throw Error(raw);const data=JSON.parse(raw);return {r,data,cookie:r.headers.get('set-cookie')?.split(';')[0]};
 }
 const payload=(email,referral=null)=>({email,password:'a long unique passphrase 123',name:'CIV Test Member',acceptTerms:true,referral});
@@ -68,11 +69,11 @@ test('invalid attribution is ignored, expired sessions fail and members get a st
  await db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').bind(made.data.user.id).run();assert.equal((await call('/api/me',{cookie:made.cookie})).r.status,401);
 });
 test('readiness validates required schema, and payment rails remain correctly disabled',async()=>{
- const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,16);
+ const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,17);
  assert.equal((await call('/api/celo/config')).data.ready,false);
  const made=await call('/api/auth/register',{method:'POST',body:payload('payment@example.com')});
  assert.equal((await call('/api/celo/testnet/intents',{method:'POST',cookie:made.cookie,body:{amountUsd:100,sender:'0x'+'1'.repeat(40)}})).r.status,503);
- assert.equal((await call('/api/funding/deposit',{method:'POST',cookie:made.cookie})).r.status,403);
+ assert.equal((await call('/api/funding/deposit',{method:'POST',cookie:made.cookie})).r.status,415);
  const d=await call('/api/celo/testnet/intents',{cookie:made.cookie});assert.equal(d.data.testUsdcMinor,0);assert.equal(d.data.liveBalanceCredits,false);
 });
 
@@ -257,4 +258,28 @@ test('calendar YTD uses January 1 history, shared leases, cached baselines and h
   assert.equal((await (await marketYtd(env,'BTC')).json()).changePct,null,'Never combine a previous-year snapshot with the new year baseline');
   await seed();
  }finally{globalThis.fetch=prior}
+});
+
+
+test('successful legacy logins atomically upgrade both older password formats to standard PBKDF2',async()=>{
+ const password='isolated legacy migration passphrase';
+ for(const salt of ['legacy-isolated-salt','v2:isolated-legacy-salt']){
+  let hash;
+  if(salt.startsWith('v2:')){let material=Buffer.from(password);for(let round=0;round<3;round++)material=pbkdf2Sync(material,salt+':'+round,100000,32,'sha256');hash=material.toString('base64url')}
+  else hash=pbkdf2Sync(password,salt,310000,32,'sha256').toString('base64url');
+  const id=randomUUID(),email=id+'@example.invalid';await db.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,email,hash,salt).run();
+  const rejected=await call('/api/auth/login',{method:'POST',body:{email,password:'incorrect isolated password'}});assert.equal(rejected.r.status,401);assert.equal((await db.prepare('SELECT salt FROM users WHERE id=?').bind(id).first()).salt,salt);
+  const login=await call('/api/auth/login',{method:'POST',body:{email,password}});assert.equal(login.r.status,200);assert.match(login.r.headers.get('set-cookie'),/^__Host-civ_session=/);
+  const stored=await db.prepare('SELECT password_hash,salt FROM users WHERE id=?').bind(id).first();assert.match(stored.salt,/^v3:/);assert.equal(stored.password_hash,pbkdf2Sync(password,stored.salt,600000,32,'sha256').toString('base64url'));
+  assert.equal((await call('/api/me',{cookie:login.cookie})).r.status,200);
+ }
+});
+
+
+test('active session count is bounded and older tokens stop authenticating',async()=>{
+ const email='session-cap@example.invalid',created=await call('/api/auth/register',{method:'POST',body:payload(email)}),cookies=[created.cookie];
+ for(let i=0;i<6;i++)cookies.push((await call('/api/auth/login',{method:'POST',body:payload(email)})).cookie);
+ assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id=?').bind(created.data.user.id).first()).n,5);
+ assert.equal((await call('/api/me',{cookie:cookies[0]})).r.status,401);assert.equal((await call('/api/me',{cookie:cookies[1]})).r.status,401);
+ assert.equal((await call('/api/me',{cookie:cookies.at(-1)})).r.status,200);
 });
