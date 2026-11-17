@@ -14,7 +14,7 @@ const id='00000000-0000-4000-8000-000000000001';
 const server=createServer(async(req,res)=>{
  const path=new URL(req.url,'http://localhost').pathname;res.setHeader('Content-Type',path.startsWith('/api/')?'application/json':'text/html');
  const reply=d=>res.end(JSON.stringify(d));
- if(/^\/(civ-mark|favicon)\.svg$/.test(path)||/^\/assets\/coins\/(btc|eth|sol|xrp|bnb|ada|doge)\.svg$/.test(path)){res.setHeader('Content-Type','image/svg+xml');return res.end(await readFile('public'+path))}if(path==='/experience.js'||path==='/market-watch.js'||path==='/asset-explorer.js'||path==='/civ-circle.js'||path==='/homepage-updates.js'||path==='/member-experience.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public'+path))}if(path==='/asset-explorer.css'||path==='/civ-circle.css'||path==='/homepage.css'||path==='/member-experience.css'){res.setHeader('Content-Type','text/css');return res.end(await readFile('public'+path))}if(!path.startsWith('/api/'))return res.end(html);
+ if(/^\/(civ-mark|favicon)\.svg$/.test(path)||/^\/assets\/coins\/(btc|eth|sol|xrp|bnb|ada|doge)\.svg$/.test(path)){res.setHeader('Content-Type','image/svg+xml');return res.end(await readFile('public'+path))}if(path==='/experience.js'||path==='/market-watch.js'||path==='/asset-explorer.js'||path==='/civ-circle.js'||path==='/homepage-updates.js'||path==='/member-experience.js'||path==='/fund-scenarios.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public'+path))}if(path==='/asset-explorer.css'||path==='/civ-circle.css'||path==='/homepage.css'||path==='/member-experience.css'||path==='/fund-scenarios.css'){res.setHeader('Content-Type','text/css');return res.end(await readFile('public'+path))}if(!path.startsWith('/api/'))return res.end(html);
  const kycPayload=()=>{const status=req.headers['x-ui-kyc']==='flow'?fixtureKycState:req.headers['x-ui-kyc']==='approved'?'approved':'not_started';return {status,verified:status==='approved',revision:status==='not_started'?0:1,submissionId:status==='not_started'?null:'11111111-1111-4111-8111-111111111111',documents:req.headers['x-ui-kyc']==='flow'?fixtureKycDocuments:[],consentVersion:'kyc-2026-11-17',maxFileBytes:5242880,withdrawalRequestsEnabled:status==='approved',payoutExecutionEnabled:false}};
  if(path==='/api/investor/kyc')return reply(kycPayload());
  if(path.startsWith('/api/investor/kyc/documents/')&&req.method==='POST'){for await(const chunk of req){}const kind=path.split('/').at(-1);fixtureKycDocuments=fixtureKycDocuments.filter(d=>d.kind!==kind);const document={id:kind+'-fixture-id',kind,content_type:'image/png',byte_size:68,created_at:new Date().toISOString()};fixtureKycDocuments.push(document);res.statusCode=201;return reply({document,kyc:kycPayload()})}
@@ -104,6 +104,52 @@ try{
   if(width===390){await page.screenshot({path:'artifacts/ui/mobile-deposit-full.png',fullPage:true});await page.locator('#signupCheckout').scrollIntoViewIfNeeded();await page.screenshot({path:'artifacts/ui/mobile-deposit.png'})}
   await page.locator('[data-vault-tab="account"]').click();await expect(page.locator('#memberId')).toHaveText('a1b2c3d4e5');await expect(page.locator('#referralBalance')).toContainText('1');assert.equal(await page.locator('#referralLink').inputValue(),'https://cryptoinvestmentvault.com/r/a1b2c3d4e5');await expect(page.locator('#circleTier')).toHaveText('Gold Circle');await expect(page.locator('#circleTier')).toHaveAttribute('data-tier','gold');await expect(page.locator('#circlePending')).toContainText('425');await expect(page.locator('#circleRate100')).toContainText('225');await expect(page.locator('#circleDashboardBoard .circle-person')).toContainText('Circle-TEST12345');await page.locator('#circleDashboardBoard [data-circle-period=all]').click();await expect(page.locator('#circleDashboardBoard [data-circle-period=all]')).toHaveAttribute('aria-pressed','true');assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);if(width===390)await page.screenshot({path:'artifacts/ui/mobile-referrals.png',fullPage:true});
   assert.deepEqual(errors,[],'Uncaught UI error');await context.close();
+ }
+ for (const width of [320, 360, 390, 428, 768, 1280]) {
+  const context = await browser.newContext({viewport:{width,height:844},reducedMotion:'reduce',extraHTTPHeaders:{'x-ui-auth':'0'}});
+  const page = await context.newPage(), errors = [], projectionRequests = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => {if(request.url().includes('/api/investor/projection')) projectionRequests.push(request.url())});
+  await page.route('**/*', route => route.request().url().startsWith(origin) ? route.continue() : route.abort());
+  await page.goto(origin + '/#fund-scenarios');
+  await expect(page.locator('#fund-scenarios')).toBeVisible();
+  await expect(page.locator('[data-fund="100"] .fund-ending-value')).toHaveText('$107.21');
+  await expect(page.locator('[data-fund="200"] .fund-ending-value')).toHaveText('$214.43');
+  await expect(page.locator('[data-fund="100"] .fund-change-value')).toHaveText('+7.21%');
+  await expect(page.locator('[data-fund="100"] .fund-daily-profit')).toHaveText('+$1.06');
+  await page.locator('[data-fund="100"] .fund-chart').press('Home');
+  await expect(page.locator('[data-fund="100"] .fund-day-balance')).toHaveText('$100.00');
+  await page.locator('[data-fund="100"] .fund-chart').press('ArrowRight');
+  await expect(page.locator('[data-fund="200"] .fund-day-balance')).toHaveText('$202.00');
+  await page.locator('#fundDailyRate').fill('-10'); await page.locator('#fundDuration').fill('2');
+  await expect(page.locator('[data-fund="100"] .fund-ending-value')).toHaveText('$81.00');
+  await expect(page.locator('[data-fund="200"] .fund-change-value')).toHaveText('-19%');
+  await expect(page.locator('[data-fund="100"] .fund-daily-profit')).toHaveText('-$9.00');
+  await page.locator('#fundDailyBreakdown summary').click();
+  await expect(page.locator('#fundDailyRows tr')).toHaveCount(3);
+  await expect(page.locator('#fundDailyRows tr').last()).toContainText('$162.00');
+  await page.locator('#fundDailyBreakdown summary').click();
+  await page.locator('#fundDailyRate').fill('0');
+  await expect(page.locator('[data-fund="200"] .fund-ending-value')).toHaveText('$200.00');
+  await page.locator('#fundDailyRate').fill('100');await page.locator('[data-fund-days="90"]').click();
+  await expect(page.locator('[data-fund="100"] .fund-ending-value')).not.toContainText('Infinity');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, 'Fund overflow at maximum values: ' + width);
+  await page.locator('#fundDailyRate').fill('101');
+  await expect(page.locator('#fundCalculatorFeedback')).toContainText('−100% to 100%');
+  await page.locator('#fundScenarioReset').click();
+  await expect(page.locator('[data-fund="100"] .fund-ending-value')).toHaveText('$107.21');
+  await page.locator('#fundDurationSlider').press('ArrowRight');
+  await expect(page.locator('#fundDuration')).toHaveValue('8');
+  await page.locator('#fundDailySlider').press('Home');
+  await expect(page.locator('[data-fund="200"] .fund-ending-value')).toHaveText('$0.00');
+  await expect(page.locator('[data-fund="200"] .fund-change-value')).toHaveText('-100%');
+  await page.locator('#fundScenarioReset').click();
+  await page.locator('#fund-scenarios').scrollIntoViewIfNeeded();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, 'Fund horizontal overflow at ' + width);
+  if(width===390 || width===1280) await page.screenshot({path:'artifacts/ui/fund-scenarios-' + width + '.png',fullPage:true});
+  assert.deepEqual(projectionRequests, [], 'The public calculator must not call the account projection API');
+  assert.deepEqual(errors, [], 'Fund calculator client exceptions at ' + width);
+  await context.close();
  }
  const context=await browser.newContext({viewport:{width:390,height:844},reducedMotion:'reduce',extraHTTPHeaders:{'x-ui-auth':'0'}});const page=await context.newPage();await page.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());await page.goto(origin+'/join');await page.locator('#authForm').waitFor();const authHeader=await page.locator('.auth .top').boundingBox(),authTitle=await page.locator('#authTitle').boundingBox();assert.ok(authHeader.y+authHeader.height<=authTitle.y,'Signup header must not overlap its title');assert.equal(await page.locator('.site-footer').count(),1);assert.equal(await page.locator('#signupDepositNotice').isVisible(),true);assert.match(await page.locator('#signupDepositNotice').innerText(),/No wallet or deposit required to sign up/);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);await page.screenshot({path:'artifacts/ui/mobile-signup.png'});
  await page.locator('#fullName').fill('Preview Member');await page.locator('#email').fill('preview@example.invalid');await page.locator('#password').fill('isolated-ui-fixture-password');await page.locator('#acceptTerms').check();await page.locator('#submit').click();await page.locator('#vaultLoader').waitFor({state:'visible'});await page.screenshot({path:'artifacts/ui/mobile-signup-loader.png'});await page.locator('#vaultLoader').waitFor({state:'hidden'});await expect(page.locator('#dashboard')).toBeVisible();assert.equal(await page.locator('#dashboard').getAttribute('aria-busy'),null);

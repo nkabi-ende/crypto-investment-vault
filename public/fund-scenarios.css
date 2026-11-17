@@ -1,0 +1,52 @@
+/* The same open grid, lime accent and quiet typography as CIV's vault overview. */
+.fund-lab{margin:60px 0;scroll-margin-top:100px;min-width:0}
+.fund-lab-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:24px}
+.fund-lab .fund-lab-heading h2{font-size:clamp(33px,4.8vw,51px);font-weight:550;line-height:1.12;letter-spacing:-.055em;margin:16px 0}
+.fund-lab-heading h2 span{color:#b5f269}
+.fund-lab-heading p{font-size:13px;line-height:1.8;color:#a1afa8;max-width:48ch;margin:0 0 25px}
+.fund-illustration-label{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;border:1px solid #3d523c;border-radius:30px;padding:9px 12px;margin-top:4px;font:10px/1.5 ui-monospace,monospace;color:#c4d8bb}
+.fund-illustration-label svg{width:14px;height:14px;color:#b5f269}
+.fund-calculator{border-block:1px solid #3c503e;margin:0;padding:0}
+.fund-calculator-heading{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid #293b2e}
+.fund-calculator-heading h3{font-size:13px;font-weight:550;margin:0}.fund-reset{border:0;background:none;color:#a5b9a5;font:inherit;font-size:11px;min-height:32px;padding:3px 0 3px 14px;cursor:pointer}
+.fund-calculator-fields{display:grid;grid-template-columns:1fr 1fr;gap:40px;padding:23px 0 18px}
+.fund-field{min-width:0}.fund-field-top{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:20px}.fund-field label{font-size:12px;color:#b6c5b8}
+.fund-number{display:flex;align-items:center;border:1px solid #3a503c;background:#101a14;border-radius:8px;padding:0 10px;color:#b5f269;font-size:11px;flex-shrink:0;gap:3px}
+.fund-number input{width:72px;min-width:0;border:0;padding:10px 3px;background:none;color:#f0f7ee;text-align:right;font:inherit;font-size:16px;font-variant-numeric:tabular-nums;appearance:textfield;-moz-appearance:textfield}
+.fund-number input::-webkit-inner-spin-button,.fund-number input::-webkit-outer-spin-button{appearance:none;margin:0}
+.fund-number:focus-within{outline:2px solid #b5f269;outline-offset:3px}.fund-number input:focus-visible{outline:none}
+.fund-field input[type=range]{--range-fill:50%;appearance:none;display:block;width:100%;height:5px;background:linear-gradient(to right,#b5f269 var(--range-fill),#2d4032 var(--range-fill));border:0;border-radius:8px;cursor:pointer;margin:17px 0 12px;padding:0;touch-action:pan-y}
+.fund-field input[type=range]::-webkit-slider-thumb{appearance:none;width:18px;height:18px;background:#d0f6a8;border:4px solid #18251c;border-radius:50%;box-shadow:0 0 0 1px #76965e;cursor:grab}
+.fund-field input[type=range]::-moz-range-thumb{width:12px;height:12px;background:#d0f6a8;border:3px solid #18251c;border-radius:50%;box-shadow:0 0 0 1px #76965e;cursor:grab}
+.fund-range-labels{display:flex;justify-content:space-between;color:#83978a;font:9px/1.7 ui-monospace,monospace}.fund-days-options{display:flex;gap:6px;flex-wrap:wrap;margin-top:15px}
+.fund-days-options button{border:1px solid #344b38;border-radius:30px;padding:7px 12px;min-height:34px;background:none;color:#a5b9a5;font:inherit;font-size:11px;cursor:pointer}
+.fund-days-options button[aria-pressed=true]{border-color:#8fac71;color:#c7f0a4;background:#b5f2690b}
+.fund-calculation-summary{color:#b0c2ad;font:10px/1.8 ui-monospace,monospace;letter-spacing:0;padding:0 0 18px;overflow-wrap:anywhere}
+.fund-calculator-feedback{color:#f0c78a;font-size:12px;line-height:1.7}.fund-calculator-feedback:empty{display:none}
+.fund-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+.fund-projection{--fund-ink:#b5f269;min-width:0;padding:30px 30px 0 0}.fund-projection+article{padding-left:30px;padding-right:0;border-left:1px solid #293b2e;background:radial-gradient(ellipse at 100% 15%,#b5f26905,transparent 60%)}
+.fund-projection[data-direction=negative]{--fund-ink:#edb58c}
+.fund-projection-head{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.fund-projection-head h3{font-size:14px;font-weight:550;letter-spacing:-.02em;margin:0}.fund-projection-head>span{font:9px/1.5 ui-monospace,monospace;color:#8fa495;letter-spacing:.1em}
+.fund-ending-value{display:block;font-size:clamp(34px,4.5vw,52px);font-weight:500;letter-spacing:-.06em;line-height:1.2;font-variant-numeric:tabular-nums;margin:22px 0 7px;overflow-wrap:anywhere}
+.fund-ending-label{color:#8fa495;font-size:11px}.fund-period-return{display:flex;justify-content:space-between;gap:14px;align-items:baseline;margin-top:25px}
+.fund-period-return span{font-size:11px;color:#a1afa8}.fund-change-value{color:var(--fund-ink);font-size:21px;font-weight:500;letter-spacing:-.04em;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.fund-percentage-meter{height:7px;background:#24392b;margin-top:12px;overflow:hidden;position:relative}.fund-percentage-meter span{display:block;height:100%;width:0;background:var(--fund-ink)}
+.fund-percentage-meter:after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(to right,transparent 0,transparent calc(10% - 3px),#0b1011 calc(10% - 3px),#0b1011 10%)}
+.fund-meter-scale{display:block;color:#83978a;font:9px/1.7 ui-monospace,monospace;margin-top:8px;text-align:right;overflow-wrap:anywhere}
+.fund-chart-caption{color:#a1afa8;font-size:10px;margin:20px 0 5px}.fund-chart{display:block;width:100%;height:auto;overflow:visible;touch-action:pan-y;color:var(--fund-ink);cursor:crosshair;border-radius:5px}
+.fund-chart-grid line{stroke:#273b2e;stroke-dasharray:3 5}.fund-chart-grid .fund-zero-line{stroke:#4a604a;stroke-dasharray:none}
+.fund-chart text{fill:#8fa495;font:9px ui-monospace,monospace}.fund-chart-line{stroke:var(--fund-ink);stroke-width:2.5;fill:none;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.fund-chart-cursor{stroke:#8fa495;stroke-dasharray:3 5;opacity:.7}.fund-chart-dot{fill:var(--fund-ink);stroke:#0b1011;stroke-width:3}
+.fund-readout{display:grid;grid-template-columns:1fr 1fr;gap:14px;border-top:1px solid #293b2e;padding:16px 0 20px}.fund-readout div{min-width:0}.fund-day-label{display:block;color:#b5f269;font:9px/1.6 ui-monospace,monospace;margin-bottom:13px}
+.fund-readout small{display:block;color:#8fa495;font-size:10px;margin-bottom:7px}.fund-readout strong{display:block;font-size:17px;font-weight:500;letter-spacing:-.02em;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.fund-daily-profit{color:var(--fund-ink)}
+.fund-profit-summary{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:16px 0;border-top:1px solid #3c503e;font-size:12px;color:#a1afa8}.fund-total-profit{color:var(--fund-ink);font-size:19px;font-weight:500;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.fund-lab-footer{display:flex;align-items:center;justify-content:space-between;gap:20px;border-top:1px solid #3c503e;padding:18px 0;color:#8fa495;font-size:10px;line-height:1.8}
+.fund-lab-footer p{margin:0}.fund-chart-hint{font-size:10px}
+.fund-breakdown{border-block:1px solid #293b2e;margin-top:0}.fund-breakdown summary{cursor:pointer;font-size:12px;color:#bfdbb1;min-height:48px;padding:15px 0;list-style-position:inside}.fund-table-scroll{overflow-x:auto;max-height:370px;overscroll-behavior:contain}
+.fund-breakdown table{border-collapse:collapse;width:100%;font-size:11px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}.fund-breakdown caption{text-align:left;color:#a1afa8;padding:0 0 15px;font-size:10px}
+.fund-breakdown th,.fund-breakdown td{padding:13px 12px;border-top:1px solid #293b2e;font-weight:400}.fund-breakdown thead th{color:#b5f269;background:#101a14;position:sticky;top:0}.fund-breakdown th:first-child{text-align:left;padding-left:0}
+.fund-lab :is(button,a,input[type=range],summary,.fund-chart):focus-visible{outline:2px solid #b5f269;outline-offset:5px}
+@media(min-width:761px){.fund-field:last-child{padding-left:30px;border-left:1px solid #293b2e}.fund-calculator-fields{gap:30px}.fund-days-options{justify-content:flex-end}}
+@media(max-width:760px){.fund-lab{margin:46px 0}.fund-calculator-fields{gap:22px}.fund-illustration-label{font-size:9px;padding:8px 10px}.fund-projection{padding-right:20px}.fund-projection+article{padding-left:20px}.fund-lab-heading{gap:14px}.fund-lab-footer{align-items:flex-start;flex-direction:column;gap:6px}.fund-days-options button{padding:7px 10px}.fund-number input{width:54px}}
+@media(max-width:570px){.fund-lab-heading{display:block}.fund-illustration-label{margin:0 0 22px}.fund-lab .fund-lab-heading h2{font-size:35px}.fund-lab-heading p{font-size:12px;margin-bottom:16px}.fund-calculator-fields{grid-template-columns:1fr;gap:23px;padding-top:20px}.fund-field+.fund-field{border-top:1px solid #293b2e;padding-top:22px}.fund-field-top{margin-bottom:18px}.fund-number input{width:68px}.fund-comparison{grid-template-columns:minmax(0,1fr)}.fund-projection,.fund-projection+article{padding:25px 0 0;border-left:0;background:none}.fund-projection+article{border-top:1px solid #3c503e;margin-top:10px}.fund-ending-value{font-size:45px;margin-top:20px}.fund-period-return{margin-top:23px}.fund-chart-caption{margin-top:16px}.fund-readout strong{font-size:18px}.fund-lab-footer{margin-top:5px}.fund-days-options{gap:8px}.fund-days-options button{padding:8px 16px}}
