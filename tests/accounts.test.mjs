@@ -68,7 +68,7 @@ test('invalid attribution is ignored, expired sessions fail and members get a st
  await db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').bind(made.data.user.id).run();assert.equal((await call('/api/me',{cookie:made.cookie})).r.status,401);
 });
 test('readiness validates required schema, and payment rails remain correctly disabled',async()=>{
- const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,13);
+ const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,15);
  assert.equal((await call('/api/celo/config')).data.ready,false);
  const made=await call('/api/auth/register',{method:'POST',body:payload('payment@example.com')});
  assert.equal((await call('/api/celo/testnet/intents',{method:'POST',cookie:made.cookie,body:{amountUsd:100,sender:'0x'+'1'.repeat(40)}})).r.status,503);
@@ -78,7 +78,7 @@ test('readiness validates required schema, and payment rails remain correctly di
 
 test('invitation HTML has server-rendered OpenGraph metadata and invalid links do not load signup',async()=>{
  const made=await call('/api/auth/register',{method:'POST',body:payload('social-member@example.com')});
- const legacy=await mf.dispatchFetch(origin+'/r/'+made.data.user.id,{redirect:'manual'});assert.equal(legacy.status,301);assert.equal(legacy.headers.get('location'),'/r/'+made.data.referral.code);await legacy.text();const response=await mf.dispatchFetch(made.data.referral.url);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('property="og:url" content="'+made.data.referral.url+'"'));assert.match(html,/og-invitation-v3.png/);assert.match(html,/id="authForm"/);assert.match(html,/Minimum deposit: 100 USDC or USDT/);assert.doesNotMatch(html,/kzn-ai|KZN AI Solutions/i);
+ const legacy=await mf.dispatchFetch(origin+'/r/'+made.data.user.id,{redirect:'manual'});assert.equal(legacy.status,301);assert.equal(legacy.headers.get('location'),'/r/'+made.data.referral.code);await legacy.text();const response=await mf.dispatchFetch(made.data.referral.url);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('property="og:url" content="'+made.data.referral.url+'"'));assert.match(html,/og-invitation-v3.png/);assert.match(html,/id="authForm"/);assert.match(html,/Choose a \$100 or \$200 account/);assert.doesNotMatch(html.split('</head>')[0],/R1,000/);assert.doesNotMatch(html,/kzn-ai|KZN AI Solutions/i);
  const retired=await mf.dispatchFetch(origin+'/r/kzn-ai');assert.equal(retired.status,404);await retired.text();
  const bad=await mf.dispatchFetch(origin+'/r/unknown-invitation');assert.equal(bad.status,404);await bad.text();
  const dashboard=await mf.dispatchFetch(origin+'/dashboard');assert.match(await dashboard.text(),/noindex,nofollow/);
@@ -131,7 +131,7 @@ test('browser invitation capture rejects campaign tags, expires old links and wo
  saved=JSON.stringify({code:'kzn-ai',at:Date.now()});assert.equal(evaluate('/'),null);assert.equal(saved,null);
  saved=JSON.stringify({code:id,at:Date.now()-31*86400000});assert.equal(evaluate('/'),null);
  const blocked={setItem(){throw Error('disabled')},getItem(){throw Error('disabled')}};assert.equal(evaluate('/r/'+id,'',blocked),id);
- assert.equal(evaluate('/join','?ref='+id),id);assert.equal(evaluate('/r/abcdef0123'),'abcdef0123');assert.equal(evaluate('/'),'abcdef0123');
+ assert.equal(evaluate('/join','?ref='+id),id);assert.equal(evaluate('/r/abcdef0123'),id,'First valid invite wins until explicitly corrected');assert.equal(evaluate('/'),id);
 });
 
 test('stablecoin deposits activate membership, preserve token balances and isolate R500 promotion',async()=>{
@@ -190,14 +190,14 @@ test('stablecoin deposits activate membership, preserve token balances and isola
   assert.equal((await onboard(other)).activated,false);
   assert.deepEqual((await onboard(other)).balances,[]);
   assert.equal((await onboard(owner)).referralWallet.amountMinor,0);
-  chain=42220;hash='0x'+'d'.repeat(64);const recovery=await createQuoteFor(other.data.user.id,'USDT',sender,100);q=await stored(recovery);await p.reconcilePayments(env);assert.equal((await stored(recovery)).status,'verified');assert.equal((await onboard(other)).activated,true);assert.equal((await onboard(owner)).referral.qualified,1);assert.equal((await onboard(owner)).referralWallet.amountMinor,100000);await p.verifyQuote(env,await stored(recovery),hash);assert.equal((await onboard(owner)).referralWallet.amountMinor,100000);
+  chain=42220;hash='0x'+'d'.repeat(64);const recovery=await createQuoteFor(other.data.user.id,'USDT',sender,100);q=await stored(recovery);await p.reconcilePayments(env);assert.equal((await stored(recovery)).status,'verified');assert.equal((await onboard(other)).activated,true);assert.equal((await onboard(owner)).referral.qualified,1);assert.equal((await onboard(owner)).referralWallet.amountMinor,0);assert.equal((await onboard(owner)).referralWallet.pendingMinor,20000);await p.verifyQuote(env,await stored(recovery),hash);assert.equal((await onboard(owner)).referralWallet.amountMinor,0);assert.equal((await onboard(owner)).referralWallet.pendingMinor,20000);
   hash='0x'+'e'.repeat(64);const repeat=await createQuoteFor(owner.data.user.id,'USDC',sender,200);q=await stored(repeat);assert.equal((await p.verifyQuote(env,q,hash)).status,'verified');state=await onboard(owner);assert.equal(state.balances.find(b=>b.asset==='USDT').amountMinor,100000000);assert.equal(state.balances.find(b=>b.asset==='USDC').amountMinor,200000000);assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM deposit_promotions WHERE user_id=?').bind(owner.data.user.id).first()).n,1);
   const ledger=(await call('/api/investor/ledger',{cookie:owner.cookie})).data;assert.equal(ledger.balanceUsdc,200);assert.equal(ledger.balanceUsdt,100);
   hash='0x'+'f'.repeat(64);q=await stored(await createQuoteFor(other.data.user.id,'USDC',sender,100));wrongAmount=true;assert.equal((await p.verifyQuote(env,q,hash)).status,'review');wrongAmount=false;
   await db.prepare('UPDATE funding_receipts SET refunded_minor=amount_minor WHERE user_id=?').bind(owner.data.user.id).run();state=await onboard(owner);assert.equal(state.activated,false);assert.equal(state.promotion.status,'ineligible');
   await assert.rejects(db.prepare('UPDATE funding_receipts SET user_id=? WHERE id=?').bind(other.data.user.id,first.id).run());
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM signup_deposits').first()).n,0,'No new ZAR activation payments');
-  await db.prepare('UPDATE funding_receipts SET refunded_minor=amount_minor WHERE user_id=?').bind(other.data.user.id).run();const refunded=await onboard(owner);assert.equal(refunded.referralWallet.amountMinor,0);assert.equal(refunded.referralWallet.suspendedMinor,100000);assert.equal(refunded.referralWallet.withdrawable,false);
+  await db.prepare('UPDATE funding_receipts SET refunded_minor=amount_minor WHERE user_id=?').bind(other.data.user.id).run();const refunded=await onboard(owner);assert.equal(refunded.referralWallet.amountMinor,0);assert.equal(refunded.referralWallet.suspendedMinor,20000);assert.equal(refunded.referralWallet.withdrawable,false);
   const privateHistory=(await call('/api/payments/quotes',{cookie:other.cookie})).data.quotes;assert.ok(!privateHistory.some(x=>x.id===first.id));
   assert.equal((await call('/api/payments/wallet')).r.status,401);assert.equal((await call('/api/payments/quotes')).r.status,401);
   assert.equal((await call('/api/payments/manual-claims',{method:'POST',cookie:owner.cookie,body:{asset:'USDC',txHash:hash}})).r.status,503);

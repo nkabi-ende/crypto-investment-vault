@@ -52,4 +52,8 @@ Run `npm run db:migrate:local` or `npm run db:migrate:remote` to apply all migra
 
 ## Signup and referral release
 
-See [production onboarding](docs/production-onboarding.md) for public signup links, migrations 0008–0012, stablecoin funding, short referral links and R1,000 referral credits and configurable future perks, transactional email activation, verification limits and the outstanding MiniPay treasury configuration. Run `npm run check` before deployment and `npm run test:smoke` after deployment.
+See [production onboarding](docs/production-onboarding.md) for public signup links, migrations 0008–0012, stablecoin funding, short referral links, versioned Circle commissions and configurable future perks, transactional email activation, verification limits and the outstanding MiniPay treasury configuration. Run `npm run check` before deployment and `npm run test:smoke` after deployment.
+
+## ADA, Shaka and CIV Circle
+
+See [the implementation specification](docs/civ-circle-ada-shaka.md). Apply migrations 0014–0015 for tiered R200–R400 direct-referral commission contracts, automatic public partner aliases, server-bound referral recovery and the asset-balanced ADA journal. Shaka provides reference volatility/volume signal logic and trailing stops; live venue execution is not connected.
