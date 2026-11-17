@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 const securityModule=await build({entryPoints:['src/security.ts'],bundle:true,write:false,format:'esm',platform:'node'});
 const {contentSecurityPolicy}=await import('data:text/javascript;base64,'+Buffer.from(securityModule.outputFiles[0].text).toString('base64'));
+const adminModule=await build({entryPoints:['src/admin-page.ts'],bundle:true,write:false,format:'esm',platform:'node'});
+const {adminPage}=await import('data:text/javascript;base64,'+Buffer.from(adminModule.outputFiles[0].text).toString('base64'));
 const cspNonce='civ-ui-security-fixture';
 const html=await readFile('public/index.html','utf8');
 assert.doesNotMatch(html,/id="asset-guide"|href="#asset-guide"/,'Retired crypto explainer and navigation must be removed');
@@ -18,8 +20,9 @@ const id='00000000-0000-4000-8000-000000000001';
 const server=createServer(async(req,res)=>{
  const path=new URL(req.url,'http://localhost').pathname;res.setHeader('Content-Type',path.startsWith('/api/')?'application/json':'text/html');
  const reply=d=>res.end(JSON.stringify(d));
+ if(path==='/admin'){res.setHeader('Content-Security-Policy',"default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");return res.end(adminPage(true,false))}
  if(path==='/shaka-simulation.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public'+path))}
- if(/^\/(civ-mark|favicon)\.svg$/.test(path)||/^\/assets\/coins\/(btc|eth|sol|xrp|bnb|ada|doge)\.svg$/.test(path)){res.setHeader('Content-Type','image/svg+xml');return res.end(await readFile('public'+path))}if(path==='/experience.js'||path==='/market-watch.js'||path==='/asset-explorer.js'||path==='/civ-circle.js'||path==='/homepage-updates.js'||path==='/member-experience.js'||path==='/fund-scenarios.js'||path==='/session-guard.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public'+path))}if(path==='/asset-explorer.css'||path==='/civ-circle.css'||path==='/homepage.css'||path==='/member-experience.css'||path==='/fund-scenarios.css'){res.setHeader('Content-Type','text/css');return res.end(await readFile('public'+path))}if(!path.startsWith('/api/')){if(req.headers['x-ui-csp']==='1'){res.setHeader('Content-Security-Policy',contentSecurityPolicy(cspNonce,true));return res.end(html.replace(/<script\b/g,'<script nonce=\"'+cspNonce+'\"'))}return res.end(html)}
+ if(/^\/(civ-mark|favicon)\.svg$/.test(path)||/^\/assets\/coins\/(btc|eth|sol|xrp|bnb|ada|doge)\.svg$/.test(path)){res.setHeader('Content-Type','image/svg+xml');return res.end(await readFile('public'+path))}if(path==='/experience.js'||path==='/market-watch.js'||path==='/asset-explorer.js'||path==='/civ-circle.js'||path==='/homepage-updates.js'||path==='/member-experience.js'||path==='/fund-scenarios.js'||path==='/session-guard.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public'+path))}if(path==='/admin.css'||path==='/asset-explorer.css'||path==='/civ-circle.css'||path==='/homepage.css'||path==='/member-experience.css'||path==='/fund-scenarios.css'){res.setHeader('Content-Type','text/css');return res.end(await readFile('public'+path))}if(!path.startsWith('/api/')){if(req.headers['x-ui-csp']==='1'){res.setHeader('Content-Security-Policy',contentSecurityPolicy(cspNonce,true));return res.end(html.replace(/<script\b/g,'<script nonce=\"'+cspNonce+'\"'))}return res.end(html)}
  const kycPayload=()=>{const status=req.headers['x-ui-kyc']==='flow'?fixtureKycState:req.headers['x-ui-kyc']==='approved'?'approved':'not_started';return {status,verified:status==='approved',revision:status==='not_started'?0:1,submissionId:status==='not_started'?null:'11111111-1111-4111-8111-111111111111',documents:req.headers['x-ui-kyc']==='flow'?fixtureKycDocuments:[],consentVersion:'kyc-2026-11-17',maxFileBytes:5242880,withdrawalRequestsEnabled:status==='approved',payoutExecutionEnabled:false}};
  if(path==='/api/investor/kyc')return reply(kycPayload());
  if(path.startsWith('/api/investor/kyc/documents/')&&req.method==='POST'){for await(const chunk of req){}const kind=path.split('/').at(-1);fixtureKycDocuments=fixtureKycDocuments.filter(d=>d.kind!==kind);const document={id:kind+'-fixture-id',kind,content_type:'image/png',byte_size:68,created_at:new Date().toISOString()};fixtureKycDocuments.push(document);res.statusCode=201;return reply({document,kyc:kycPayload()})}
@@ -283,6 +286,16 @@ try{
  }
  console.log('Mobile UI passed: 320, 360, 390, 428, 768, 1280px; compact five-tab navigation, MiniPay onboarding, wallet privacy and deposits.');
 
+ for(const width of [320,390,1280]){
+  const adminContext=await browser.newContext({viewport:{width,height:844}}),page=await adminContext.newPage();await page.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());await page.goto(origin+'/admin');
+  await expect(page.getByRole('heading',{name:'Vault control.'})).toBeVisible();await expect(page.getByRole('link',{name:'Open identity review'})).toBeVisible();assert.equal(await page.locator('a[href="/dashboard/mirror"]').count(),0);assert.equal(await page.locator('.admin-brand img').evaluate(el=>el.complete&&el.naturalWidth>0),true);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'Admin must fit '+width+'px');await adminContext.close();
+ }
+ for(const target of ['/admin','https://untrusted.invalid/admin']){
+  const context=await browser.newContext({viewport:{width:390,height:844},extraHTTPHeaders:{'x-ui-auth':'0','x-ui-csp':'1'}}),page=await context.newPage();await page.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());await page.goto(origin+'/join?returnTo='+encodeURIComponent(target));await expect(page.locator('#modal')).toBeVisible();
+  if(target==='/admin')await expect(page.locator('#authTitle')).toHaveText('Welcome back.');else await page.locator('#switchMode').click();
+  await page.locator('#email').fill('admin-fixture@example.invalid');await page.locator('#password').fill('synthetic-test-password');await page.locator('#submit').click();await expect(page).toHaveURL(origin+(target==='/admin'?'/admin':'/dashboard'));await context.close();
+ }
+ console.log('Branded admin UI passed at 320, 390 and 1280px; sign-in returns to allowlisted destinations and rejects external redirects.');
  const identityContext=await browser.newContext({viewport:{width:390,height:844},reducedMotion:'reduce',extraHTTPHeaders:{'x-ui-kyc':'flow'}});
  const identityPage=await identityContext.newPage();const identityErrors=[];identityPage.on('pageerror',e=>identityErrors.push(e.message));await identityPage.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());await identityPage.goto(origin+'/dashboard');await identityPage.locator('#vaultLoader').waitFor({state:'hidden'});
  await expect(identityPage.locator('#memberVerifiedBadge')).not.toBeVisible();await identityPage.locator('.identity-prompt [data-open-kyc]').click();await expect(identityPage.locator('#identityDialog')).toBeVisible();
