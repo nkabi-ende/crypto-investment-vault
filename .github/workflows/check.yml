@@ -23,6 +23,24 @@ jobs:
           python -m pip install --disable-pip-version-check Pillow==11.3.0 CairoSVG==2.9.1
           python scripts/generate_brand_assets.py
           python -c "from PIL import Image; x=Image.open('public/og-invitation-v3.png'); assert x.size==(1200,630); assert x.format=='PNG'"
+      - name: Inspect live CoinGecko status (only sanitized status codes)
+        run: |
+          node --input-type=module <<'NODE'
+          for (const route of ['/api/markets','/api/market-pulse']) {
+            try {
+              const res=await fetch('https://cryptoinvestmentvault.com'+route,{signal:AbortSignal.timeout(15000),headers:{'cache-control':'no-cache'}});
+              const data=await res.json().catch(()=>({}));
+              console.log(JSON.stringify({
+                route,status:res.status,code:typeof data.code==='string'?data.code:null,
+                source:typeof data.source==='string'?data.source:null,
+                error:typeof data.error==='string'?data.error.slice(0,130):null,
+                assets:Array.isArray(data.assets)?data.assets.length:null,
+                stale:typeof data.stale==='boolean'?data.stale:null,
+                asOf:typeof data.asOf==='string'?data.asOf:null
+              }));
+            } catch(e) { console.log(JSON.stringify({route,error:'Network unreachable or request timed out'})); }
+          }
+          NODE
       - name: Install browser for mobile checks
         run: npx playwright install --with-deps chromium
       - name: Check mobile funding and membership navigation
