@@ -5,7 +5,7 @@ async function json(path){const r=await fetch(new URL(path,origin),{signal:Abort
 const status=await json('/api/status');assert.equal(status.release,'stablecoin-funding-v4');assert.equal(status.fundingEnabled,false);assert.equal(status.liveTradingEnabled,false);assert.equal(status.membershipDepositsEnabled,false);assert.equal(status.pilotOnly,true);
 const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,15);
 for(const path of ['/join']){
- const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes('id="authForm"'));assert.ok(html.includes('id="vaultLoader"'));assert.ok(html.includes('class="site-footer"'));assert.ok(html.includes('/civ-mark.svg'));assert.ok(html.includes('og-invitation-v3.png'));
+ const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes('id="authForm"'));assert.ok(html.includes('id="vaultLoader"'));assert.ok(html.includes('class="site-footer"'));assert.ok(html.includes('/civ-mark.svg'));assert.ok(html.includes('og-invitation-v3.png'));assert.ok(html.includes('Choose a $100 or $200 account'));assert.doesNotMatch(html.split('</head>')[0],/R1,000/);assert.ok(html.includes('id="shaka-strategy"'));assert.ok(html.includes('id="circle-leaderboard"'));
  assert.ok(html.includes('id="minipay-start"'),'MiniPay education must be present on signup entry');
  assert.ok(html.includes('No wallet or deposit required to sign up'),'Signup should not gate users behind a wallet');
  assert.ok(html.includes('id="openMiniPaySetup"'),'Deposit page must expose a self-service wallet setup guide');
@@ -13,6 +13,10 @@ for(const path of ['/join']){
  assert.ok(html.includes('id6504087257'),'Official MiniPay iPhone store link must exist');
  assert.ok(html.includes('Check deposit availability in your dashboard.')&&html.includes('Deposits are not available for this account.'),'Do not imply customer deposits are open');assert.ok(html.includes(`property="og:url" content="${origin}${path}"`));
 }
+const board=await json('/api/affiliates/leaderboard?period=month');assert.ok(Array.isArray(board.rows));assert.equal(board.timeZone,'Africa/Johannesburg');for(const row of board.rows)assert.deepEqual(Object.keys(row).sort(),['alias','capitalIntroducedBand','qualifiedReferrals','rank','tier']);
+const strategy=await json('/api/strategy/shaka');assert.equal(strategy.name,'Shaka');assert.ok(strategy.indicators.includes('Relative volume'));
+const circleCss=await fetch(new URL('/civ-circle.css',origin));assert.equal(circleCss.status,200);assert.ok((await circleCss.text()).includes('--circle-accent:var(--civ-accent,#b5f269)'));
+const circleScript=await fetch(new URL('/civ-circle.js',origin));assert.equal(circleScript.status,200);assert.ok((await circleScript.text()).includes('/api/investor/affiliates'));
 const mark=await fetch(new URL('/civ-mark.svg',origin));assert.equal(mark.status,200);assert.match(mark.headers.get('content-type'),/image\/svg\+xml/);assert.ok((await mark.text()).includes('#b5f269'));
 for(const path of ['/legal/terms.html','/legal/privacy.html','/legal/risk.html']){
  const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});

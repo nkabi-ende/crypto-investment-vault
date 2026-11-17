@@ -11,14 +11,14 @@
   root.querySelectorAll('[data-circle-period]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.circlePeriod===period)));
   try{const d=await get('/api/affiliates/leaderboard?period='+period);if(root.dataset.period!==period)return;list.replaceChildren();
    for(const row of d.rows){const item=el('li','circle-row'),rank=el('span','circle-rank',String(row.rank).padStart(2,'0')),person=el('div','circle-person'),count=el('div','circle-count',row.qualifiedReferrals);
-    person.append(el('strong','',row.alias),el('small','',name(row.tier)));count.append(el('small','','qualified referrals'));person.append(el('small','','Capital introduced · '+row.capitalIntroducedBand));item.append(rank,person,count);list.append(item)}
+    item.dataset.rank=String(row.rank);person.append(el('strong','',row.alias),el('small','circle-person-tier',name(row.tier)));count.append(el('small','','qualified referrals'));person.append(el('small','','Capital introduced · '+row.capitalIntroducedBand));item.append(rank,person,count);list.append(item)}
    if(!d.rows.length)list.append(el('li','circle-empty','The circle starts here. Partner rankings appear as invitations are accepted and qualifying referrals are validated.'));
    updated.textContent='Updated '+new Date(d.asOf).toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit'})+' · Capital introduced excludes bonuses, gains and repeat deposits. Amount bands use nominal USDC/USDT units.';
   }catch{if(root.dataset.period!==period)return;list.replaceChildren(el('li','circle-empty','Rankings are temporarily unavailable. Please try again shortly.'));updated.textContent=''}
  }
  let loading=false;
  async function loadAccount(){if(loading||!document.body.classList.contains('signed-in'))return;loading=true;
-  try{const d=await get('/api/investor/affiliates');document.getElementById('circleTier').textContent=name(d.tier);document.getElementById('circleAlias').textContent=d.profile?.public_alias||'Your public alias is created when your first invitation is accepted.';
+  try{const d=await get('/api/investor/affiliates');document.getElementById('circleTier').textContent=name(d.tier);document.getElementById('circleTier').dataset.tier=d.tier;document.getElementById('circleAlias').textContent=d.profile?.public_alias||'Your public alias is created when your first invitation is accepted.';
    document.getElementById('circlePending').textContent=money(d.amounts.pending);document.getElementById('circleApproved').textContent=money(d.amounts.approved+(d.legacy?.credited||0));document.getElementById('circlePaid').textContent=money(d.amounts.paid);
    const progress=document.getElementById('circleProgress');progress.max=d.nextThreshold||15;progress.value=Math.min(d.qualified90d,progress.max);
    document.getElementById('circleProgressLabel').textContent=d.nextTier?d.qualified90d+' qualified in 90 days · '+d.remaining+' more to '+name(d.nextTier):'Platinum Circle · '+d.qualified90d+' qualified referrals in 90 days';
