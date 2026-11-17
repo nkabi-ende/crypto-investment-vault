@@ -11,7 +11,7 @@ for(const path of ['/join']){
  assert.ok(html.includes('id="openMiniPaySetup"'),'Deposit page must expose a self-service wallet setup guide');
  assert.ok(html.includes('com.opera.minipay'),'Official Android MiniPay store link must exist');
  assert.ok(html.includes('id6504087257'),'Official MiniPay iPhone store link must exist');
- assert.ok(html.includes('Public deposits are not open'),'Do not imply customer deposits are open');assert.ok(html.includes(`property="og:url" content="${origin}${path}"`));
+ assert.ok(html.includes('Check deposit availability in your dashboard.')&&html.includes('Deposits are not available for this account.'),'Do not imply customer deposits are open');assert.ok(html.includes(`property="og:url" content="${origin}${path}"`));
 }
 const mark=await fetch(new URL('/civ-mark.svg',origin));assert.equal(mark.status,200);assert.match(mark.headers.get('content-type'),/image\/svg\+xml/);assert.ok((await mark.text()).includes('#b5f269'));
 for(const path of ['/legal/terms.html','/legal/privacy.html','/legal/risk.html']){
