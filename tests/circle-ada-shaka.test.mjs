@@ -6,9 +6,10 @@ import {build} from 'esbuild';
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
 let mf,db,ada,shaka,circle;let sequence=0;
 const origin='https://cryptoinvestmentvault.com';
+const simulationAdminId='51c356ea-87f1-43b2-8922-281ef2701b7a';
 async function module(path){const r=await build({entryPoints:[path],bundle:true,write:false,format:'esm',platform:'node'});return import('data:text/javascript;base64,'+Buffer.from(r.outputFiles[0].text).toString('base64'))}
 async function migrate(file){const sql=(await readFile('migrations/'+file,'utf8')).replace(/--[^\n]*/g,'');let statement='';for(const line of sql.split('\n')){statement+=line+'\n';if(!line.trim().endsWith(';'))continue;if(/^CREATE TRIGGER/i.test(statement.trim())&&!statement.trim().endsWith('END;'))continue;await db.prepare(statement.trim()).run();statement=''}assert.equal(statement.trim(),'')}
-async function user(inviter){const id=randomUUID();await db.batch([
+async function user(inviter,id=randomUUID()){await db.batch([
  db.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,id+'@example.invalid','unused','unused'),
  db.prepare('INSERT INTO portfolios(user_id) VALUES(?)').bind(id),
  db.prepare('INSERT INTO account_profiles(user_id,display_name,terms_version) VALUES(?,?,?)').bind(id,'Private Name '+id,'2026-11-17'),
@@ -32,7 +33,7 @@ async function call(path,{cookie,body,method='GET'}={}){const r=await mf.dispatc
 let legacyOwner,legacyMember;
 before(async()=>{
  const built=await build({entryPoints:['src/index.ts'],bundle:true,write:false,format:'esm',platform:'node',external:['node:crypto']});
- mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'circle-test',modules:true,script:built.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:100,period:60}}},assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:['/api/*','/r/*','/dashboard','/join']},bindings:{APP_ORIGIN:origin,EMAIL_DELIVERY_ENABLED:'false'}}]}));
+ mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'circle-test',modules:true,script:built.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:100,period:60}}},assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:['/api/*','/r/*','/dashboard','/dashboard/mirror','/dashboard/mirror/*','/join']},bindings:{APP_ORIGIN:origin,EMAIL_DELIVERY_ENABLED:'false',SHAKA_SIM_ADMIN_IDS:simulationAdminId}}]}));
  db=await mf.getD1Database('DB');
  for(const file of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort()){
   if(file.startsWith('0014')){legacyOwner=await user();legacyMember=await user(legacyOwner);await fund(legacyMember,100)}
@@ -41,6 +42,104 @@ before(async()=>{
  [ada,shaka,circle]=await Promise.all([module('src/ada.ts'),module('src/shaka.ts'),module('src/circle.ts')]);
 });
 after(async()=>{await mf?.dispose()});
+test('CIV Circle access follows referral attribution or explicit versioned consent',async()=>{
+ const applicant=await user(),cookie=await cookieFor(applicant);
+ const path='/api/investor/affiliates';
+ const initial=(await call(path,{cookie})).data;
+ assert.equal(initial.profile,null);
+ assert.equal(initial.registrations,0);
+ const terms={accepted:true,version:initial.consentVersion};
+ assert.equal((await call(path+'/consent',{method:'POST',body:terms})).r.status,401);
+ assert.equal((await call(path+'/consent',{cookie,method:'POST',body:{...terms,accepted:false}})).r.status,400);
+ const joined=await call(path+'/consent',{cookie,method:'POST',body:terms});
+ assert.equal(joined.r.status,200);
+ assert.equal(joined.data.consent.terms_version,terms.version);
+ assert.match(joined.data.profile.public_alias,/^Circle-/);
+ const replay=await call(path+'/consent',{cookie,method:'POST',body:terms});
+ assert.deepEqual(replay.data.consent,joined.data.consent);
+ assert.deepEqual(replay.data.profile,joined.data.profile);
+ const inviter=await user();
+ await user(inviter);
+ const attributed=(await call(path,{cookie:await cookieFor(inviter)})).data;
+ assert.equal(attributed.registrations,1);
+ assert.equal(attributed.consent,null);
+ assert.ok(attributed.profile);
+});
+test('dashboard mirror serves its read-only page exclusively to signed-in administrators',async()=>{
+ const admin=await user(undefined,simulationAdminId),member=await user();
+ const headers={cookie:await cookieFor(admin)};
+ for(const path of ['/dashboard/mirror','/dashboard/mirror/','/dashboard/mirror/index.html']){
+  assert.equal((await mf.dispatchFetch(origin+path)).status,404);
+  assert.equal((await mf.dispatchFetch(origin+path,{headers:{cookie:await cookieFor(member)}})).status,404);
+ }
+ const response=await mf.dispatchFetch(origin+'/dashboard/mirror/',{headers});
+ assert.equal(response.status,200);
+ assert.match(response.headers.get('cache-control'),/private, no-store/);
+ const html=await response.text();
+ assert.match(html,/<title>Dashboard mirror \| Crypto Investment Vault<\/title>/);
+ assert.match(html,/Mirror account/);
+ assert.doesNotMatch(html,/simulat|balances?|results?|\/api\/|<script|<form/i);
+ const css=await mf.dispatchFetch(origin+'/dashboard-mirror.css');
+ assert.equal(css.status,200);
+});
+test('Shaka simulation requires member verification, closes once per Johannesburg day, and leaves ADA funds intact',async()=>{
+ const engine=await module('src/shaka-simulation.ts');
+ const admin=simulationAdminId,member=await user(),other=await user();
+ const adminCookie=await cookieFor(admin),memberCookie=await cookieFor(member),otherCookie=await cookieFor(other);
+ const memberPath='/api/investor/shaka-simulation',adminPath='/api/admin/shaka-simulation';
+ assert.equal((await call(memberPath)).r.status,401);
+ assert.equal((await call(adminPath,{cookie:memberCookie})).r.status,403);
+ assert.equal((await call(adminPath,{cookie:adminCookie})).r.status,200);
+ assert.equal((await call(memberPath,{cookie:memberCookie})).data.status,'verification_required');
+ const post=(path,cookie,body)=>call(path,{cookie,body,method:'POST'});
+ assert.equal((await post(adminPath+'/members',memberCookie,{userId:member})).r.status,403);
+ assert.equal((await post(adminPath+'/scenario',adminCookie,{scenario:'invalid'})).r.status,400);
+ const grant=await post(adminPath+'/members',adminCookie,{userId:member});
+ assert.equal(grant.r.status,200);
+ assert.equal((await post(adminPath+'/members',adminCookie,{userId:member})).data.startsOn,grant.data.startsOn);
+ assert.equal((await call(memberPath,{cookie:memberCookie})).data.status,'deposit_required');
+ await fund(member,100);
+ const pending=(await call(memberPath,{cookie:memberCookie})).data;
+ assert.equal(pending.status,'pending');
+ assert.equal(pending.startingCents,10000);
+ assert.equal(pending.balanceCents,'10000');
+ assert.deepEqual(pending.confirmedDeposit,{amountMinor:100000000,asset:'USDC'});
+ assert.deepEqual(pending.bonus,{amountMinor:100000,status:'pending_terms'});
+ assert.equal((await call(adminPath,{cookie:adminCookie})).data.activations.filter(event=>event.userId===member).length,1);
+ await fund(other,200);
+ assert.equal((await call(memberPath,{cookie:otherCookie})).data.status,'verification_required');
+ await post(adminPath+'/scenario',adminCookie,{scenario:'mixed'});
+ const scheduled=await post(adminPath+'/scenario',adminCookie,{scenario:'rising'});
+ assert.equal(scheduled.r.status,201);
+ const boundary=Date.parse(scheduled.data.startsOn+'T00:00:00+02:00')+86400000;
+ await engine.closeShakaSimulation(db,new Date(boundary-1));
+ assert.equal((await call(memberPath,{cookie:memberCookie})).data.status,'pending');
+ await Promise.all([engine.closeShakaSimulation(db,new Date(boundary)),engine.closeShakaSimulation(db,new Date(boundary))]);
+ const result=(await call(memberPath,{cookie:memberCookie})).data;
+ assert.equal(result.mode,'simulation');
+ assert.equal(result.withdrawable,false);
+ assert.equal(result.basket.length,7);
+ assert.equal(result.entries.length,1);
+ assert.equal(result.latest.rateBps,35);
+ assert.equal(result.latest.changeCents,'35');
+ assert.equal(result.balanceCents,'10035');
+ await engine.closeShakaSimulation(db,new Date(boundary+2*86400000));
+ const replay=(await call(memberPath,{cookie:memberCookie})).data;
+ assert.equal(replay.entries.length,3);
+ assert.equal(replay.latest.changeCents,'-21');
+ assert.equal(replay.balanceCents,'10074');
+ assert.equal((await call(memberPath,{cookie:otherCookie})).data.status,'verification_required');
+ const real=(await call('/api/investor/ledger',{cookie:memberCookie})).data;
+ assert.equal(real.balanceUsdc,100);
+ assert.equal(real.daily.status,'pending');
+ assert.deepEqual(real.entries.map(entry=>entry.type),['verified_deposit']);
+ await fund(member,200);
+ assert.equal((await call(memberPath,{cookie:memberCookie})).data.startingCents,10000);
+ assert.equal((await call(adminPath,{cookie:adminCookie})).data.activations.filter(event=>event.userId===member).length,1);
+ await post(adminPath+'/members',adminCookie,{userId:other});
+ assert.equal((await call(adminPath,{cookie:adminCookie})).data.activations.filter(event=>event.userId===other).length,1);
+ assert.equal((await call(memberPath,{cookie:otherCookie})).data.startingCents,20000);
+});
 test('migration preserves earned R1000 contracts and imports actual funding into a balanced ADA journal',async()=>{
  const r=await db.prepare('SELECT * FROM referral_rewards WHERE referred_user_id=?').bind(legacyMember).first();assert.equal(r.amount_minor,100000);
  const ledger=await ada.adaLedger(db,legacyMember);assert.equal(ledger.balanceUsdc,100);assert.equal(ledger.balanceUsdt,0);

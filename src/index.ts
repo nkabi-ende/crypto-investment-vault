@@ -3,17 +3,20 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { deliverEmails } from './email';
 import { membership } from './membership';
-import { affiliateSummary,leaderboard } from './circle';
+import { acceptAffiliateTerms,affiliateConsentVersion,affiliateSummary,leaderboard } from './circle';
 import { adaLedger } from './ada';
 import { kycStatus,registerKycRoutes } from './kyc';
 import { shakaMethodology } from './shaka';
+import { dashboardMirror } from './dashboard-mirror';
+import { closeShakaSimulation,scheduleSimulation,simulationAdmin,simulationLedger,verifySimulationMember } from './shaka-simulation';
 import { marketPulse,cryptoHeadlines } from './market-intelligence';
 import { marketPrices } from './market-prices';
 import { marketYtd } from './market-ytd';
 import { paymentConfig,pilotAllowed,mainnetPreflight,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 type Bindings = PaymentEnv & { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
-const app = new Hono<{Bindings:Bindings}>();
+type SimulationBindings = Bindings & { SHAKA_SIM_ADMIN_IDS?: string };
+const app = new Hono<{Bindings:SimulationBindings}>();
 app.onError((error,c)=>{console.error('CIV request failed',c.req.path,error instanceof Error ? error.name : 'UnknownError');return c.json({error:'Account service temporarily unavailable. Please try again.'},503)});
 const smallBody=bodyLimit({maxSize:16384,onError:c=>c.json({error:'Request too large'},413)});
 app.use('/api/*',async(c,next)=>{if(c.req.method==='POST'&&/^\/api\/investor\/kyc\/documents\/(identity|address)$/.test(c.req.path))return next();return smallBody(c,next)});
@@ -33,7 +36,7 @@ async function passwordHash(password:string,salt:string) {
  return b64(material);
 }
 function same(a:string,b:string){if(a.length!==b.length)return false;let diff=0;for(let i=0;i<a.length;i++)diff|=a.charCodeAt(i)^b.charCodeAt(i);return diff===0}
-async function currentUser(c:import('hono').Context<{Bindings:Bindings}>){const token=getCookie(c,'civ_session');if(!token)return null;const hash=await digest(token);return await c.env.DB.prepare('SELECT users.id, users.email FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.id_hash=? AND sessions.expires_at>?').bind(hash,Date.now()).first<{id:string,email:string}>()}
+async function currentUser<E extends {Bindings:Bindings}>(c:import('hono').Context<E>){const token=getCookie(c,'civ_session');if(!token)return null;const hash=await digest(token);return await c.env.DB.prepare('SELECT users.id, users.email FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.id_hash=? AND sessions.expires_at>?').bind(hash,Date.now()).first<{id:string,email:string}>()}
 async function session(c:import('hono').Context<{Bindings:Bindings}>, id:string, accountWrites:D1PreparedStatement[] = []) {
   const token = rand();
   const lifetimeSeconds = 7 * 86400;
@@ -66,8 +69,58 @@ async function referralClaim(c:import('hono').Context<{Bindings:Bindings}>){
 }
 app.get('/api/referrals/claim',async c=>{const claim=await referralClaim(c);return c.json({code:claim?.alias||null})});
 app.get('/api/strategy/shaka',c=>c.json(shakaMethodology()));
+app.get('/api/markets/usd-zar',async c=>{
+ try {
+  const response=await fetch('https://api.frankfurter.dev/v1/latest?base=USD&symbols=ZAR',{
+   signal:AbortSignal.timeout(4000),cf:{cacheEverything:true,cacheTtlByStatus:{'200':3600,'400-599':0}}
+  });
+  if(!response.ok)throw new Error('Reference rate unavailable');
+  const data=await response.json<{base:string;date:string;rates?:{ZAR:number}}>();
+  const rate=data.rates?.ZAR;
+  if(data.base!=='USD'||typeof rate!=='number'||!Number.isFinite(rate)||rate<=0||!/^(\d{4}-\d{2}-\d{2})$/.test(data.date))throw new Error('Invalid reference rate');
+  c.header('Cache-Control','public, max-age=900');
+  return c.json({rate,date:data.date});
+ }catch{return c.json({error:'ZAR reference rate unavailable'},503)}
+});
+app.get('/api/investor/shaka-simulation',async c=>{
+ const user=await currentUser(c);
+ return user?c.json(await simulationLedger(c.env.DB,user.id)):c.json({error:'Unauthorized'},401);
+});
+const simulationAdminApp=new Hono<{Bindings:SimulationBindings;Variables:{adminId:string}}>();
+function isSimulationAdmin(env:SimulationBindings,userId:string){
+ return env.SHAKA_SIM_ADMIN_IDS?.split(',').some(id=>id.trim()===userId) ?? false;
+}
+simulationAdminApp.use('*',async(c,next)=>{
+ const user=await currentUser(c);
+ if(!user)return c.json({error:'Unauthorized'},401);
+ if(!isSimulationAdmin(c.env,user.id))return c.json({error:'Forbidden'},403);
+ c.set('adminId',user.id);
+ await next();
+});
+simulationAdminApp.get('/',async c=>c.json(await simulationAdmin(c.env.DB)));
+simulationAdminApp.post('/scenario',async c=>{
+ const body=await c.req.json().catch(()=>null);
+ const result=await scheduleSimulation(c.env.DB,c.get('adminId'),body?.scenario);
+ return result?c.json(result,201):c.json({error:'Unknown paper portfolio scenario'},400);
+});
+simulationAdminApp.post('/members',async c=>{
+ const body=await c.req.json().catch(()=>null);
+ const id=body?.userId;
+ if(typeof id!=='string'||!(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)))return c.json({error:'Enter a valid member ID'},400);
+ const result=await verifySimulationMember(c.env.DB,c.get('adminId'),id.toLowerCase());
+ return result?c.json(result):c.json({error:'Member ID was not found'},404);
+});
+app.route('/api/admin/shaka-simulation',simulationAdminApp);
 app.get('/api/affiliates/leaderboard',async c=>{const period=c.req.query('period')||'month';if(!['month','all','newcomers'].includes(period))return c.json({error:'Unknown leaderboard period'},400);return c.json(await leaderboard(c.env.DB,period as 'month'|'all'|'newcomers'))});
 app.get('/api/investor/affiliates',async c=>{const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);return c.json(await affiliateSummary(c.env.DB,user.id))});
+app.post('/api/investor/affiliates/consent',async c=>{
+ const user=await currentUser(c);
+ if(!user)return c.json({error:'Unauthorized'},401);
+ const body=await c.req.json().catch(()=>null);
+ if(body?.accepted!==true||body?.version!==affiliateConsentVersion)return c.json({error:'Accept the current affiliate terms to join'},400);
+ await acceptAffiliateTerms(c.env.DB,user.id);
+ return c.json(await affiliateSummary(c.env.DB,user.id));
+});
 app.post('/api/auth/register',async c=>{
  const body=await c.req.json().catch(()=>null);
  if(!body||typeof body!=='object')return c.json({error:'Invalid request'},400);
@@ -393,9 +446,14 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT user_id,status,revision FROM kyc_submissions LIMIT 0'),
   c.env.DB.prepare('SELECT document_id,part,body FROM kyc_document_chunks LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,enabled FROM kyc_reviewers LIMIT 0'),
-  c.env.DB.prepare('SELECT user_id,idempotency_key FROM withdrawal_requests LIMIT 0')
+  c.env.DB.prepare('SELECT user_id,idempotency_key FROM withdrawal_requests LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,starts_on FROM shaka_sim_members LIMIT 0'),
+  c.env.DB.prepare('SELECT id,starts_on,rates_json FROM shaka_sim_schedules LIMIT 0'),
+  c.env.DB.prepare('SELECT trading_day,schedule_id,rate_bps FROM shaka_sim_closes LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,receipt_id,starts_on FROM shaka_sim_activations LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,terms_version,accepted_at FROM affiliate_consents LIMIT 0')
  ]);
- return c.json({ready:true,schema:16,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:20,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
@@ -411,6 +469,14 @@ async function entryPage(c:import('hono').Context<{Bindings:Bindings}>) {
 }
 app.get('/join',entryPage);
 app.get('/dashboard',entryPage);
+app.on('GET',['/dashboard/mirror','/dashboard/mirror/'],async c=>{
+ c.header('Cache-Control','private, no-store');
+ c.header('X-Robots-Tag','noindex, nofollow');
+ c.header('Content-Security-Policy',"default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+ const user=await currentUser(c);
+ if(!user||!isSimulationAdmin(c.env,user.id))return c.notFound();
+ return c.html(dashboardMirror);
+});
 app.get('/r/:code',async c=>{
  const code=c.req.param('code').toLowerCase();
  if(!referralPattern.test(code))return c.text('Invitation not found',404);
@@ -423,7 +489,8 @@ app.get('/r/:code',async c=>{
  }
  return entryPage(c);
 });
-export default {fetch:app.fetch, scheduled(_event:ScheduledController,env:Bindings,ctx:ExecutionContext){
+export default {fetch:app.fetch, scheduled(event:ScheduledController,env:SimulationBindings,ctx:ExecutionContext){
+ ctx.waitUntil(closeShakaSimulation(env.DB,new Date(event.scheduledTime)));
  ctx.waitUntil(reconcile(env).catch(()=>console.error('Testnet reconciliation unavailable')));
  ctx.waitUntil(deliverEmails(env));
  ctx.waitUntil(reconcilePayments(env));

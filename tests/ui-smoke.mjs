@@ -14,6 +14,7 @@ const id='00000000-0000-4000-8000-000000000001';
 const server=createServer(async(req,res)=>{
  const path=new URL(req.url,'http://localhost').pathname;res.setHeader('Content-Type',path.startsWith('/api/')?'application/json':'text/html');
  const reply=d=>res.end(JSON.stringify(d));
+ if(path==='/shaka-simulation.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public'+path))}
  if(/^\/(civ-mark|favicon)\.svg$/.test(path)||/^\/assets\/coins\/(btc|eth|sol|xrp|bnb|ada|doge)\.svg$/.test(path)){res.setHeader('Content-Type','image/svg+xml');return res.end(await readFile('public'+path))}if(path==='/experience.js'||path==='/market-watch.js'||path==='/asset-explorer.js'||path==='/civ-circle.js'||path==='/homepage-updates.js'||path==='/member-experience.js'||path==='/fund-scenarios.js'){res.setHeader('Content-Type','application/javascript');return res.end(await readFile('public'+path))}if(path==='/asset-explorer.css'||path==='/civ-circle.css'||path==='/homepage.css'||path==='/member-experience.css'||path==='/fund-scenarios.css'){res.setHeader('Content-Type','text/css');return res.end(await readFile('public'+path))}if(!path.startsWith('/api/'))return res.end(html);
  const kycPayload=()=>{const status=req.headers['x-ui-kyc']==='flow'?fixtureKycState:req.headers['x-ui-kyc']==='approved'?'approved':'not_started';return {status,verified:status==='approved',revision:status==='not_started'?0:1,submissionId:status==='not_started'?null:'11111111-1111-4111-8111-111111111111',documents:req.headers['x-ui-kyc']==='flow'?fixtureKycDocuments:[],consentVersion:'kyc-2026-11-17',maxFileBytes:5242880,withdrawalRequestsEnabled:status==='approved',payoutExecutionEnabled:false}};
  if(path==='/api/investor/kyc')return reply(kycPayload());
@@ -26,7 +27,7 @@ const server=createServer(async(req,res)=>{
  if(path==='/api/referrals/claim')return reply({code:null});
  if(path==='/api/affiliates/leaderboard')return reply({asOf:new Date().toISOString(),rows:[{rank:1,alias:'Circle-TEST12345',tier:'gold',qualifiedReferrals:5,capitalIntroducedBand:'Under 1,000 units'}]});
  if(path==='/api/investor/affiliates')return reply({publication:'automatic_public_alias',profile:{public_alias:'Circle-TEST12345'},tier:'gold',qualified90d:5,nextTier:'platinum',nextThreshold:15,remaining:10,rates:{100:22500,200:35000},amounts:{pending:42500,approved:22500,paid:0},legacy:{credited:100000},capitalIntroduced:[{asset:'USDC',amountMinor:500000000}],rewards:[{amountMinor:22500,accountUsd:100,tier:'gold',status:'pending',eligibleAt:'2026-12-17 12:00:00'}],payoutSchedule:'Monthly after validation and settlement approval'});
- if(path==='/api/investor/onboarding')return reply({name:'CIV Member',memberId:id,welcomeEmail:'awaiting_provider',activated:false,signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000},balances:[],promotion:{currency:'ZAR',amountMinor:50000,status:'requires_deposit',withdrawable:false},referralWallet:{amountMinor:100000,suspendedMinor:0},referral:{code:'a1b2c3d4e5',url:'https://cryptoinvestmentvault.com/r/a1b2c3d4e5',registrations:0,qualified:0,pending:0},perks:[]});
+ if(path==='/api/investor/onboarding')return reply({name:'CIV Member',memberId:id,welcomeEmail:'awaiting_provider',activated:false,signupDeposit:{currency:'USDC_OR_USDT',requiredMinor:100000000},balances:[],promotion:{currency:'ZAR',amountMinor:100000,status:'pending_terms',withdrawable:false},referralWallet:{amountMinor:100000,suspendedMinor:0},referral:{code:'a1b2c3d4e5',url:'https://cryptoinvestmentvault.com/r/a1b2c3d4e5',registrations:0,qualified:0,pending:0},perks:[]});
  if(path==='/api/payments/config'&&req.headers['x-ui-disabled']==='1')return reply({mode:'testnet',chainId:11142220,ready:false,liveDepositsEnabled:false,supportedTokens:['USDC'],depositPresets:[1,2]});
  if(path==='/api/payments/config')return req.headers['x-ui-sandbox']==='1'
   ?reply({mode:'testnet',chainId:11142220,ready:true,liveDepositsEnabled:false,supportedTokens:['USDC'],depositPresets:[1,2]})
@@ -36,7 +37,15 @@ const server=createServer(async(req,res)=>{
  if(path==='/api/payments/quotes'&&req.method==='POST'){let body='';for await(const chunk of req)body+=chunk;lastQuoteBody=JSON.parse(body);return reply({id:'preview-quote',purpose:'funding',chainId:req.headers['x-ui-sandbox']==='1'?11142220:42220,symbol:lastQuoteBody.symbol,amount:lastQuoteBody.amount,tokenMinor:String(lastQuoteBody.amount*1e6),expiresAt:Date.now()+300000,transaction:{to:'0x'+'3'.repeat(40),data:'0x',value:'0x0'}})}
  if(path==='/api/payments/quotes')return reply({quotes:[]});
  if(path==='/api/investor/overview')return reply({user:{id,email:'preview@example.invalid'},portfolio:{cashUsdt:0},fundingBalances:[],holdings:[],activity:[]});
- if(path==='/api/investor/ledger')return reply({balanceUsdt:0,balanceUsdc:0,entries:[],withdrawalRequests:[],daily:{status:'pending',tradingDay:'2026-11-17',results:[]}});
+ if(path==='/api/investor/ledger')return reply({balanceUsdt:0,balanceUsdc:100,assets:[{asset:'USDC',principalMinor:100000000}],promotion:{amount_minor:100000,status:'pending_terms'},entries:[],withdrawalRequests:[],daily:{status:'pending',tradingDay:'2026-11-17',results:[]}});
+ if(path==='/api/investor/shaka-simulation'){
+  const close={tradingDay:'2026-11-17',scenario:'rising',rateBps:35,changeCents:'35',closingCents:'10035'};
+  return reply({mode:'simulation',status:'active',confirmedDeposit:{amountMinor:100000000,asset:'USDC'},bonus:{amountMinor:100000,status:'pending_terms'},balanceCents:close.closingCents,basket:['BTC','ETH','SOL','XRP','BNB','ADA','DOGE'],latest:close,entries:[close]});
+ }
+ if(path==='/api/admin/shaka-simulation'){
+  if(req.headers['x-ui-paper-admin']==='1')return reply({scenarios:[{id:'mixed',label:'Mixed market',rates:[-40,55]}],schedules:[],lastClose:'2026-11-17',activations:[]});
+  res.statusCode=403;return reply({error:'Forbidden'});
+ }
  if(path==='/api/investor/preferences')return reply({preference:null});
  if(path==='/api/celo/config')return reply({ready:false,mode:'testnet_only'});
  if(path==='/api/celo/testnet/intents')return reply({testUsdcMinor:0,intents:[]});
@@ -44,6 +53,7 @@ const server=createServer(async(req,res)=>{
  if(path==='/api/headlines')return reply({source:'CryptoPanic',asOf:new Date().toISOString(),articles:[{title:'Test publisher headline - example only',url:'https://example.com/crypto-article',source:'Example Publisher',publishedAt:new Date().toISOString()}]});
  if(path==='/api/transparency')return reply({asOf:new Date().toISOString(),categories:[],verifiedPerformance:[],announcements:[]});
  if(/^\/api\/markets\/[A-Z]+\/ytd$/.test(path)){const symbol=path.split('/')[3];if(symbol==='DOGE')return reply({symbol,year:new Date().getUTCFullYear(),changePct:null});if(symbol==='SOL')await new Promise(r=>setTimeout(r,250));return reply({symbol,year:new Date().getUTCFullYear(),asOf:new Date().toISOString(),priceUsd:100,startPriceUsd:80,changePct:symbol==='ETH'?-12.5:25,stale:symbol==='ADA'})}
+ if(path==='/api/markets/usd-zar')return reply({rate:18,date:'2026-11-17'});
  if(path==='/api/markets')return reply({source:'CoinGecko',asOf:new Date().toISOString(),stale:false,assets:[['BTC',100000.25],['ETH',3450.67],['SOL',158.42],['XRP',2.14],['BNB',827.35],['ADA',0.714],['DOGE',0.24]].map(([symbol,priceUsd])=>({symbol,priceUsd,change24h:1.25,name:symbol}))});
  res.statusCode=404;return reply({error:'Not found'});
 });
@@ -52,13 +62,44 @@ const browser=await chromium.launch({headless:true,...(process.env.CIV_CHROMIUM_
 await mkdir('artifacts/ui',{recursive:true});
 try{
  for(const width of [320,360,390,428,768,1280]){
-  const context=await browser.newContext({viewport:{width,height:844},reducedMotion:'reduce'});const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const context=await browser.newContext({viewport:{width,height:844},reducedMotion:'reduce',...(width===320||width===1280?{extraHTTPHeaders:{'x-ui-paper-admin':'1'}}:{})});const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort());
   await page.addInitScript(()=>{window.ethereum={isMiniPay:true,request:async({method})=>{if(method==='eth_chainId')return '0xa4ec';if(method==='eth_accounts')return ['0x'+'1'.repeat(40)];if(method==='eth_call')return '0x3b9aca00';throw Error('Unexpected wallet request: '+method)}}});
   await page.goto(origin+'/dashboard');if(width===390){await page.locator('#vaultLoader').waitFor({state:'visible'});await page.screenshot({path:'artifacts/ui/mobile-loader.png'});}await page.locator('#vaultLoader').waitFor({state:'hidden'});
   await expect(page.locator('#quoteBTC')).toContainText('$100,000.25');
   await expect(page.locator('#quoteADA')).toContainText('$0.714');
   await expect(page.locator('#marketWatchStatus')).toContainText('CoinGecko spot prices');
+  await expect(page.locator('#shakaSimBalance')).toHaveText('100.35 credits');
+  await expect(page.locator('#shakaSimDaily')).toHaveText('0.35 credits (+0.35%)');
+  await expect(page.locator('#shakaSimulation h2')).toHaveText('Shaka Big 7 paper portfolio mirror');
+  await expect(page.locator('#shakaSimulation')).toContainText('Paper credits have no cash value.');
+  await expect(page.locator('#shakaSimDeposit')).toHaveText('100.00 USDC');
+  if(width===390){
+   await page.getByRole('button',{name:'Find CIV Circle partner tools'}).click();
+   await expect(page.getByRole('heading',{name:'CIV Circle partner dashboard'})).toBeVisible();
+   await expect(page.locator('#circlePartnerDetails')).toBeVisible();
+   await page.locator('[data-vault-tab="overview"]').click();
+   const currency=page.locator('#shakaSimCurrency');
+   const accountCurrency=page.locator('#vaultDisplayCurrency');
+   await accountCurrency.getByRole('button',{name:'ZAR'}).click();
+   await expect(currency.getByRole('button',{name:'ZAR'})).toHaveAttribute('aria-pressed','true');
+   await expect(page.locator('#shakaSimBalance')).toContainText('equivalent');
+   await expect(page.locator('#shakaSimBonus')).toHaveText(/R\s*1\s000,00/);
+   await expect(page.locator('#verifiedDepositReference')).toContainText(/R\s*1\s800,00/);
+   await expect(page.locator('#verifiedLedgerBalance')).toContainText('100.00 USDC');
+   await currency.dispatchEvent('pointerdown',{pointerType:'touch',clientX:90});
+   await currency.dispatchEvent('pointerup',{pointerType:'touch',clientX:30});
+   await expect(currency.getByRole('button',{name:'USD'})).toHaveAttribute('aria-pressed','true');
+   await expect(accountCurrency.getByRole('button',{name:'USD'})).toHaveAttribute('aria-pressed','true');
+   await expect(page.locator('#shakaSimBalance')).toHaveText('100.35 credits');
+  }
+  if(width===320||width===1280){
+   const admin=page.locator('#shakaSimulationAdmin');
+   await expect(admin.getByText('Latest close on 2026-11-17')).toBeVisible();
+   const button=admin.getByRole('button',{name:'Schedule for tomorrow'});
+   assert.ok((await button.boundingBox()).height>=44);
+   assert.equal(await admin.evaluate(el=>el.scrollWidth<=el.clientWidth),true,'Paper portfolio admin overflows at '+width);
+  }else await expect(page.locator('#shakaSimulationAdmin')).toBeHidden();
   assert.equal(await page.locator('.nav .brand-mark').evaluate(img=>img.complete&&img.naturalWidth>0),true);await expect(page.locator('#fundingMembershipStatus')).toHaveText('Awaiting deposit');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'Home horizontal overflow at '+width);
   await expect(page.locator('#marketPulseGrid')).toContainText('Total crypto market cap');

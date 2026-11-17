@@ -3,6 +3,7 @@ type MarketEnv={DB:D1Database;COINGECKO_DEMO_API_KEY?:string};
 type CachedRow={response_json:string;updated_at_ms:number;lease_until_ms:number;next_attempt_ms:number};
 const key='big7-usd-v1',refreshMs=10*60_000,staleLimitMs=24*60*60_000;
 const coins=[['bitcoin','BTC','Bitcoin'],['ethereum','ETH','Ethereum'],['solana','SOL','Solana'],['ripple','XRP','XRP'],['binancecoin','BNB','BNB'],['cardano','ADA','Cardano'],['dogecoin','DOGE','Dogecoin']] as const;
+export const bigSevenSymbols=coins.map(([,symbol])=>symbol);
 const headers={'Cache-Control':'public, max-age=60, s-maxage=60','X-Content-Type-Options':'nosniff'};
 const json=(object:object,status=200,seconds?:number)=>Response.json(object,{status,headers:{...headers,...(seconds?{'Retry-After':String(seconds)}:{})}});
 const snapshot=(row:CachedRow|null,now:number)=>{
