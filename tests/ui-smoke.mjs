@@ -4,6 +4,7 @@ import {readFile,mkdir} from 'node:fs/promises';
 import {chromium,expect} from '@playwright/test';
 import assert from 'node:assert/strict';
 const html=await readFile('public/index.html','utf8');
+assert.doesNotMatch(html,/id="asset-guide"|href="#asset-guide"/,'Retired crypto explainer and navigation must be removed');
 assert.equal(html.split('<script').length-1,html.split('</script>').length-1,'Scripts must have matching closing tags');
 assert.equal(html.split('async function refreshSignupPayments(').length-1,1,'Only one payment refresh handler may exist');
 assert.equal(html.split("$('#signupQuote').onclick=async()=>").length-1,1,'Only one checkout click handler may exist');
