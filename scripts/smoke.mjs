@@ -5,7 +5,13 @@ async function json(path){const r=await fetch(new URL(path,origin),{signal:Abort
 const status=await json('/api/status');assert.equal(status.release,'stablecoin-funding-v4');assert.equal(status.fundingEnabled,false);assert.equal(status.liveTradingEnabled,false);assert.equal(status.membershipDepositsEnabled,false);assert.equal(status.pilotOnly,true);
 const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,13);
 for(const path of ['/join']){
- const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes('id="authForm"'));assert.ok(html.includes('id="vaultLoader"'));assert.ok(html.includes('class="site-footer"'));assert.ok(html.includes('/civ-mark.svg'));assert.ok(html.includes('og-invitation-v3.png'));assert.ok(html.includes(`property="og:url" content="${origin}${path}"`));
+ const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes('id="authForm"'));assert.ok(html.includes('id="vaultLoader"'));assert.ok(html.includes('class="site-footer"'));assert.ok(html.includes('/civ-mark.svg'));assert.ok(html.includes('og-invitation-v3.png'));
+ assert.ok(html.includes('id="minipay-start"'),'MiniPay education must be present on signup entry');
+ assert.ok(html.includes('No wallet or deposit required to sign up'),'Signup should not gate users behind a wallet');
+ assert.ok(html.includes('id="openMiniPaySetup"'),'Deposit page must expose a self-service wallet setup guide');
+ assert.ok(html.includes('com.opera.minipay'),'Official Android MiniPay store link must exist');
+ assert.ok(html.includes('id6504087257'),'Official MiniPay iPhone store link must exist');
+ assert.ok(html.includes('Public deposits are not open'),'Do not imply customer deposits are open');assert.ok(html.includes(`property="og:url" content="${origin}${path}"`));
 }
 const mark=await fetch(new URL('/civ-mark.svg',origin));assert.equal(mark.status,200);assert.match(mark.headers.get('content-type'),/image\/svg\+xml/);assert.ok((await mark.text()).includes('#b5f269'));
 for(const path of ['/legal/terms.html','/legal/privacy.html','/legal/risk.html']){

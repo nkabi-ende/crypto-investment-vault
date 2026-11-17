@@ -3,11 +3,11 @@
 'use strict';
 const $=q=>document.querySelector(q);
 const steps=[
- ['Prepare a paying wallet','Use MiniPay on Celo mainnet.','Top up your MiniPay wallet first. The funding wallet must be different from CIV’s receiving wallet. A wallet top-up is not yet a CIV deposit.'],
- ['Choose a token and amount','Select 100 or 200 USDC or USDT.','These are exact token units. The dollar value can vary from $100 or $200. The network fee is additional; double-check your token and network.'],
- ['Get a personal payment request','Choose Continue with MiniPay.','CIV creates an account-specific five-minute request. Your paying address and amount are locked into that request. If it expires, start a new request.'],
- ['Approve inside MiniPay','Review the token, amount, network and destination.','Tap Review in MiniPay, inspect the wallet confirmation and explicitly approve. Never approve a transfer you do not recognize. Do not reuse an old request.'],
- ['Wait for on-chain verification','A submitted transfer is not yet a successful deposit.','CIV independently checks the Celo receipt and finality. Your account is credited only after verification. Do not send another payment while one is pending; keep your transaction hash.']
+ ['Get your MiniPay wallet','New to MiniPay? Install the app and set up a wallet.','Download MiniPay from the official app stores and follow its onboarding. You do not need MiniPay to register for CIV. When funding is available, the paying MiniPay wallet must be different from CIV’s receiving wallet.'],
+ ['Add USDC or USDT','In MiniPay, choose Add Cash.','Choose a funding method supported in your region, follow the provider’s instructions, and confirm that the token has arrived in MiniPay on Celo. Fees, identity checks and payment options vary. Buying stablecoins in MiniPay does not deposit them into CIV.'],
+ ['Choose your CIV amount','Select 100 or 200 USDC or USDT and request a payment.','Use the Deposit tab in your CIV account when eligible. Select the exact stablecoin amount and choose Continue with MiniPay. CIV creates a personal payment request that expires after five minutes.'],
+ ['Approve in MiniPay','Check the transfer before you approve.','Review the Celo mainnet network, stablecoin contract, amount, recipient and any network fee. Approve the fresh CIV request only when everything matches. You can cancel without making a deposit.'],
+ ['Wait for verification','Only a confirmed transfer becomes a CIV deposit.','Wallet approval alone does not credit CIV. Wait for independent on-chain verification and a recorded account credit. Keep your transaction hash and do not send funds twice while a payment is pending.']
 ];
 const guide=document.createElement('dialog');
 guide.className='civ-guide-dialog';
@@ -36,6 +36,8 @@ function openGuide(force=false){
  if(!guide.open)guide.showModal();
 }
 function closeGuide(){safeStore('set',tutorialKey,'completed');if(guide.open)guide.close();}
+document.querySelectorAll('.civ-wallet-signup').forEach(button=>button.addEventListener('click',()=>document.getElementById('startBtn')?.click()));
+$('#openMiniPaySetup')?.addEventListener('click',()=>openGuide(true));
 $('#openDepositGuide')?.addEventListener('click',()=>openGuide(true));
 $('#civGuideClose').addEventListener('click',closeGuide);
 $('#civGuideSkip').addEventListener('click',closeGuide);
