@@ -135,7 +135,7 @@ try{
   await expect(guest.locator('#minipay-start')).toBeVisible();
   await expect(guest.locator('.civ-wallet-step')).toHaveCount(3);
   await expect(guest.locator('.civ-wallet-section')).toContainText('You don\'t need MiniPay to register');
-  await expect(guest.locator('.civ-wallet-links a[href*="play.google.com"]')).toHaveCount(1);
+  await expect(guest.locator('.civ-wallet-section .civ-wallet-links a[href*="play.google.com"]')).toHaveCount(1);
   const card=await guest.locator('.civ-wallet-section').boundingBox();
   assert.ok(card.x>=-2&&card.x+card.width<=width+2,'MiniPay guide must not overflow a '+width+'px phone');
   const overflow=await guest.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);
