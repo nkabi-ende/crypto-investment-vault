@@ -161,7 +161,7 @@ try{
   await guest.locator('[data-asset="ETH"]').click();await guest.locator('[data-asset="ETH"]').press('ArrowRight');await expect(guest.locator('[data-asset="SOL"]')).toBeFocused();await expect(guest.locator('[data-asset="SOL"]')).toHaveAttribute('aria-pressed','true');
   for(const button of await guest.locator('#strategy .coin').all()){const b=await button.boundingBox();assert.ok(b.height>=44&&b.height<=48,'Compact accessible crypto pills');assert.equal(await button.evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,'Pill contents must fit')}
   assert.equal(await guest.locator('#strategy .coins').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
-  if(width===390){await guest.locator('#strategy').scrollIntoViewIfNeeded();await guest.screenshot({path:'artifacts/ui/mobile-asset-explorer.png'})}
+  if(width===390){await guest.locator('#strategy').scrollIntoViewIfNeeded();await guest.screenshot({path:'artifacts/ui/mobile-asset-explorer.png'})}await expect(guest.locator('#shaka-strategy')).toContainText('ATR-based');await expect(guest.locator('#circle-leaderboard .circle-board')).toContainText('Circle-TEST12345');if(width===390){await guest.locator('#shaka-strategy').scrollIntoViewIfNeeded();await guest.screenshot({path:'artifacts/ui/mobile-shaka.png'});await guest.locator('#circle-leaderboard').scrollIntoViewIfNeeded();await guest.screenshot({path:'artifacts/ui/mobile-public-leaderboard.png'})}
   await guest.locator('#assetDetailChart').click();await expect(guest.locator('[data-market="SOL"]')).toHaveAttribute('aria-selected','true');
   await guest.locator('.civ-wallet-signup').click();
   await expect(guest.locator('#authTitle')).toHaveText('Your vault starts here.');

@@ -112,3 +112,13 @@ test('Shaka uses closed prior-price zones, volume/volatility filters and non-wid
  assert.equal(shaka.trailingStop('short',105,97,2,2),101);assert.equal(shaka.trailingStop('short',101,100,2,2),101);
  assert.equal(shaka.shakaMethodology().performance.netReturn,null);assert.equal(shaka.shakaMethodology().executionStatus,'not_connected');
 });
+
+test('zero-result and concurrent daily closes do not mint money or accept future reporting periods',async()=>{
+ const id=await user();await fund(id,100,'USDT');
+ const report={id:randomUUID(),tradingDay:ada.johannesburgDay(),asset:'USDT',realizedMinor:0,unrealizedMinor:0,externalReportId:randomUUID(),evidenceRef:'zero-venue-close',verifiedBy:'test-reconciler',effectiveAt:new Date().toISOString(),allocations:[{userId:id,realizedMinor:0,unrealizedMinor:0}]};
+ const results=await Promise.all([ada.publishVerifiedClose(db,report),ada.publishVerifiedClose(db,report)]);assert.ok(results.every(x=>x.posted));assert.ok(results.some(x=>x.replayed));
+ const ledger=await ada.adaLedger(db,id);assert.equal(ledger.balanceUsdt,100);assert.equal(ledger.daily.status,'reconciled');
+ assert.equal(await db.prepare('SELECT id FROM ada_transactions WHERE id=?').bind('close:'+report.id).first(),null);
+ await assert.rejects(ada.publishVerifiedClose(db,{...report,id:randomUUID(),tradingDay:'2099-01-01'}));
+ await assert.rejects(ada.publishVerifiedClose(db,{...report,id:randomUUID(),tradingDay:'2026-02-30'}));
+});
