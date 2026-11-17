@@ -57,3 +57,7 @@ See [production onboarding](docs/production-onboarding.md) for public signup lin
 ## ADA, Shaka and CIV Circle
 
 See [the implementation specification](docs/civ-circle-ada-shaka.md). Apply migrations 0014–0015 for tiered R200–R400 direct-referral commission contracts, automatic public partner aliases, server-bound referral recovery and the asset-balanced ADA journal. Shaka provides reference volatility/volume signal logic and trailing stops; live venue execution is not connected.
+
+## Identity verification
+
+Migration 0016 adds private ID/proof-of-address uploads, account-linked review decisions, verified badges and KYC-gated withdrawal requests. See [identity verification](docs/identity-verification.md) for reviewer provisioning, storage/access boundaries and the separate payment-execution limit. Document receipt enters review; it does not approve identity automatically.

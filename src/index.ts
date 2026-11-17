@@ -5,6 +5,7 @@ import { deliverEmails } from './email';
 import { membership } from './membership';
 import { affiliateSummary,leaderboard } from './circle';
 import { adaLedger } from './ada';
+import { kycStatus,registerKycRoutes } from './kyc';
 import { shakaMethodology } from './shaka';
 import { marketPulse,cryptoHeadlines } from './market-intelligence';
 import { marketPrices } from './market-prices';
@@ -14,7 +15,8 @@ import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 type Bindings = PaymentEnv & { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
 const app = new Hono<{Bindings:Bindings}>();
 app.onError((error,c)=>{console.error('CIV request failed',c.req.path,error instanceof Error ? error.name : 'UnknownError');return c.json({error:'Account service temporarily unavailable. Please try again.'},503)});
-app.use('/api/*',bodyLimit({maxSize:16384,onError:c=>c.json({error:'Request too large'},413)}));
+const smallBody=bodyLimit({maxSize:16384,onError:c=>c.json({error:'Request too large'},413)});
+app.use('/api/*',async(c,next)=>{if(c.req.method==='POST'&&/^\/api\/investor\/kyc\/documents\/(identity|address)$/.test(c.req.path))return next();return smallBody(c,next)});
 const enc = new TextEncoder();
 const b64 = (bytes:Uint8Array)=> btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 const rand = (n=32)=>b64(crypto.getRandomValues(new Uint8Array(n)));
@@ -54,6 +56,7 @@ app.use('/api/auth/*',async(c,next)=>{
  }
  await next();
 });
+registerKycRoutes(app,currentUser);
 const emailPattern=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const referralPattern=/^(?:[a-f0-9]{10}|[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
 const termsVersion='2026-11-17';
@@ -143,13 +146,13 @@ app.get('/api/investor/overview',async c=>{
 });
 app.get('/api/investor/onboarding',async c=>{
  const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
- const [profile,email,member]=await Promise.all([
+ const [profile,email,member,identity]=await Promise.all([
   c.env.DB.prepare('SELECT display_name,terms_accepted_at FROM account_profiles WHERE user_id=?').bind(user.id).first<{display_name:string,terms_accepted_at:string}>(),
   c.env.DB.prepare('SELECT status FROM email_outbox WHERE user_id=?').bind(user.id).first<{status:string}>(),
-  membership(c.env.DB,user.id)
+  membership(c.env.DB,user.id),kycStatus(c.env.DB,user.id)
  ]);
  return c.json({name:profile?.display_name||null,memberId:user.id,termsAcceptedAt:profile?.terms_accepted_at||null,
-  emailVerified:false,welcomeEmail:email?.status==='sent'?'sent':envEmailStatus(c.env),
+  emailVerified:false,identity,welcomeEmail:email?.status==='sent'?'sent':envEmailStatus(c.env),
   signupDeposit:{...member.deposit,collectionEnabled:paymentConfig(c.env).liveDepositsEnabled&&pilotAllowed(c.env,user.email)},activated:member.activated,balances:member.balances,promotion:member.promotion,perks:member.perks,
   referral:{code:member.invitationCode,url:new URL('/r/'+member.invitationCode,c.env.APP_ORIGIN).href,...member.referral,rewardsEnabled:true},referralWallet:member.referralWallet});
 });
@@ -386,9 +389,13 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT version,tier,amount_minor,status FROM circle_wallet LIMIT 0'),
   c.env.DB.prepare('SELECT public_alias,publication_policy FROM affiliate_profiles LIMIT 0'),
   c.env.DB.prepare('SELECT status,evidence_ref FROM ada_transactions LIMIT 0'),
-  c.env.DB.prepare('SELECT user_id,asset,bucket,amount_minor FROM ada_balances LIMIT 0')
+  c.env.DB.prepare('SELECT user_id,asset,bucket,amount_minor FROM ada_balances LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,status,revision FROM kyc_submissions LIMIT 0'),
+  c.env.DB.prepare('SELECT document_id,part,body FROM kyc_document_chunks LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,enabled FROM kyc_reviewers LIMIT 0'),
+  c.env.DB.prepare('SELECT user_id,idempotency_key FROM withdrawal_requests LIMIT 0')
  ]);
- return c.json({ready:true,schema:15,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:16,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
