@@ -44,7 +44,7 @@ $('#civGuideSkip').addEventListener('click',closeGuide);
 $('#civGuideBack').addEventListener('click',()=>setGuideStep(step-1));
 $('#civGuideNext').addEventListener('click',()=>step===steps.length-1?closeGuide():setGuideStep(step+1));
 guide.addEventListener('close',()=>safeStore('set',tutorialKey,'seen'));
-document.querySelector('[data-vault-tab="deposits"]')?.addEventListener('click',()=>setTimeout(()=>openGuide(),80));
+// The walkthrough opens only when a member chooses help.
 function progress(position){
  document.querySelectorAll('#depositProgress span').forEach((node,i)=>{node.classList.toggle('done',i<position);node.classList.toggle('active',i===position)});
 }

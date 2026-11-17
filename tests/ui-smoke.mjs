@@ -56,13 +56,15 @@ try{
   for(const icon of ['btc','eth','sol','xrp','bnb','ada','doge'])assert.equal(await page.locator('.orbit-scene img[src="/assets/coins/'+icon+'.svg"]').first().evaluate(img=>img.complete&&img.naturalWidth>0),true,'Missing source-backed hero icon: '+icon);
   if(width===390)await page.screenshot({path:'artifacts/ui/mobile-home.png'});
   await page.locator('[data-vault-tab="deposits"]').click();
+  await expect(page.locator('#civDepositGuide')).not.toBeVisible();
+  await page.locator('#openDepositGuide').click();
   await expect(page.locator('#civDepositGuide')).toBeVisible();
   await expect(page.locator('#civGuideTitle')).toContainText('Get your MiniPay wallet');
   await page.locator('#civGuideNext').click();
   await expect(page.locator('#civGuideTitle')).toContainText('Add USDC or USDT');
   await page.locator('#civGuideSkip').click();
   await expect(page.locator('#civDepositGuide')).not.toBeVisible();
-  await expect(page.locator('#signupQuote')).toHaveText('Continue with MiniPay · Pilot');
+  await expect(page.locator('#signupQuote')).toHaveText('Continue with MiniPay');
   await expect(page.locator('#openMiniPaySetup')).toBeVisible();
   await page.locator('#openMiniPaySetup').click();
   await expect(page.locator('#civGuideTitle')).toContainText('Get your MiniPay wallet');
@@ -103,7 +105,7 @@ try{
  await sandboxPage.goto(origin+'/dashboard');
  await sandboxPage.locator('#vaultLoader').waitFor({state:'hidden'});
  await sandboxPage.locator('[data-vault-tab="deposits"]').click();
- await expect(sandboxPage.locator('#civDepositGuide')).toBeVisible();await sandboxPage.locator('#civGuideSkip').click();
+ await expect(sandboxPage.locator('#civDepositGuide')).not.toBeVisible();await sandboxPage.locator('#openDepositGuide').click();await expect(sandboxPage.locator('#civDepositGuide')).toBeVisible();await sandboxPage.locator('#civGuideSkip').click();
  await expect(sandboxPage.locator('#depositAmountHeadline')).toContainText('Test with 1 or 2 USDC');
  await expect(sandboxPage.locator('[data-deposit-amount="1"]')).toContainText('TEST USDC');
  await expect(sandboxPage.locator('#collectionHelp')).toContainText('real deposits remain disabled');
@@ -120,7 +122,7 @@ try{
  await disabledPage.goto(origin+'/dashboard');
  await disabledPage.locator('#vaultLoader').waitFor({state:'hidden'});
  await disabledPage.locator('[data-vault-tab="deposits"]').click();
- await expect(disabledPage.locator('#civDepositGuide')).toBeVisible();await disabledPage.locator('#civGuideSkip').click();
+ await expect(disabledPage.locator('#civDepositGuide')).not.toBeVisible();await disabledPage.locator('#openDepositGuide').click();await expect(disabledPage.locator('#civDepositGuide')).toBeVisible();await disabledPage.locator('#civGuideSkip').click();
  await expect(disabledPage.locator('#depositAmountHeadline')).toHaveText('Start with $100.');
  await expect(disabledPage.locator('[data-deposit-amount="100"]')).toContainText('$100');
  await expect(disabledPage.locator('[data-deposit-amount="200"]')).toContainText('$200');
