@@ -119,6 +119,12 @@ test('request budget applies before database work, source artifacts stay inacces
 
 
 test('public assets contain no source maps, private key blocks or known provider secret signatures',async()=>{
+ const html=await readFile('public/index.html','utf8');
+ for(const match of html.matchAll(/<meta (?:property="og:image"|name="twitter:image") content="([^"]+)"/g)){
+  const path=new URL(match[1]).pathname,bytes=await readFile('public'+path);
+  assert.deepEqual([...bytes.subarray(0,8)],[137,80,78,71,13,10,26,10],'Referenced sharing image must ship in a clean checkout: '+path);
+  assert.equal(bytes.readUInt32BE(16),1200);assert.equal(bytes.readUInt32BE(20),630);
+ }
  async function scan(directory){for(const entry of await readdir(directory,{withFileTypes:true})){
   const path=directory+'/'+entry.name;
   if(entry.isDirectory()){await scan(path);continue}
