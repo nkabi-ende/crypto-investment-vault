@@ -36,7 +36,11 @@ test('registration is atomic and creates a durable welcome event plus referral a
  assert.match(created.r.headers.get('set-cookie'),/HttpOnly/);assert.match(created.r.headers.get('set-cookie'),/Secure/);assert.match(created.r.headers.get('set-cookie'),/SameSite=Strict/);
  const profile=await db.prepare('SELECT * FROM account_profiles WHERE user_id=?').bind(created.data.user.id).first();assert.equal(profile.display_name,'CIV Test Member');
  const attribution=await db.prepare('SELECT code FROM referral_attributions WHERE user_id=?').bind(created.data.user.id).first();assert.equal(attribution,null);
- const queue=await db.prepare('SELECT status,attempts FROM email_outbox WHERE user_id=?').bind(created.data.user.id).first();assert.deepEqual(queue,{status:'pending',attempts:0});
+ const queue=await db.prepare('SELECT event_type,status,attempts FROM email_outbox WHERE user_id=? ORDER BY event_type').bind(created.data.user.id).all();
+ assert.deepEqual(queue.results,[
+  {event_type:'account.signup.alert.v1',status:'pending',attempts:0},
+  {event_type:'account.welcome.v1',status:'pending',attempts:0}
+ ]);
  const overview=await call('/api/investor/overview',{cookie:created.cookie});assert.equal(overview.data.user.id,created.data.user.id);assert.equal(overview.data.portfolio.cashUsdt,0);
  const ledger=await call('/api/investor/ledger',{cookie:created.cookie});assert.equal(ledger.r.status,200);assert.equal(ledger.data.balanceUsdt,0);
  const onboarding=await call('/api/investor/onboarding',{cookie:created.cookie});assert.match(onboarding.data.referral.code,/^[a-f0-9]{10}$/);assert.equal(onboarding.data.referral.url,origin+'/r/'+created.data.referral.code);assert.equal(onboarding.data.emailVerified,false);
@@ -44,7 +48,7 @@ test('registration is atomic and creates a durable welcome event plus referral a
  const second=await call('/api/auth/register',{method:'POST',body:payload('second@example.com',ref)});assert.equal(second.r.status,201);
  const updated=await call('/api/investor/onboarding',{cookie:created.cookie});assert.equal(updated.data.referral.registrations,1);assert.equal(JSON.stringify(updated.data).includes('second@example.com'),false);
  const dup=await call('/api/auth/register',{method:'POST',body:payload('first@example.com')});assert.equal(dup.r.status,409);
- const total=await db.prepare('SELECT COUNT(*) AS n FROM email_outbox').first();assert.equal(total.n,2);
+ const total=await db.prepare('SELECT COUNT(*) AS n FROM email_outbox').first();assert.equal(total.n,4);
  const login=await call('/api/auth/login',{method:'POST',body:payload('first@example.com'),cookie:created.cookie});assert.equal(login.r.status,200);
  assert.equal((await call('/api/me',{cookie:created.cookie})).r.status,401); // rotated
  assert.equal((await call('/api/me',{cookie:login.cookie})).r.status,200);
@@ -69,7 +73,7 @@ test('invalid attribution is ignored, expired sessions fail and members get a st
  await db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').bind(made.data.user.id).run();assert.equal((await call('/api/me',{cookie:made.cookie})).r.status,401);
 });
 test('readiness validates required schema, and payment rails remain correctly disabled',async()=>{
- const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,21);
+ const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,22);
  assert.equal((await call('/api/celo/config')).data.ready,false);
  const made=await call('/api/auth/register',{method:'POST',body:payload('payment@example.com')});
  assert.equal((await call('/api/celo/testnet/intents',{method:'POST',cookie:made.cookie,body:{amountUsd:100,sender:'0x'+'1'.repeat(40)}})).r.status,503);
@@ -108,6 +112,49 @@ test('welcome mail stays queued until activation and delivery retries do not dup
   globalThis.fetch=async()=>new Response('private provider response must not be stored',{status:503});
   await deliverEmails(env);const retry=await db.prepare('SELECT status,attempts,available_at,last_error FROM email_outbox WHERE id=?').bind(sent.id).first();assert.equal(retry.status,'pending');assert.equal(retry.attempts,1);assert.ok(retry.available_at>Date.now());assert.equal(retry.last_error,'PROVIDER_HTTP_503');
  }finally{globalThis.fetch=realFetch}
+});
+
+
+test('Zoho Mail alerts reach the private operations inbox without enabling customer welcome messages',async()=>{
+ const result=await build({entryPoints:['src/email.ts'],bundle:true,write:false,format:'esm',platform:'node'});
+ const {deliverEmails,emailProviderReady,signupAlertEmail}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
+ const escaped=signupAlertEmail('<script>',"demo<unsafe>@example.com",'member-id',origin,'2026-11-18 00:00:00');
+ assert.ok(escaped.html.includes('&lt;script&gt;'));
+ assert.doesNotMatch(escaped.html,/<script>/);
+ const env={DB:db,APP_ORIGIN:origin,EMAIL_PROVIDER:'zoho',EMAIL_DELIVERY_ENABLED:'false',
+  SIGNUP_ALERTS_ENABLED:'true',SIGNUP_ALERT_TO:'info@cryptoinvestmentvault.com',ZOHO_REGION:'us',
+  ZOHO_MAIL_ACCOUNT_ID:'123456789',ZOHO_FROM_ADDRESS:'info@cryptoinvestmentvault.com',
+  ZOHO_CLIENT_ID:'test-client',ZOHO_CLIENT_SECRET:'test-secret',ZOHO_REFRESH_TOKEN:'test-refresh'};
+ assert.equal(emailProviderReady(env),true);
+ assert.equal(emailProviderReady({...env,ZOHO_REFRESH_TOKEN:undefined}),false);
+ assert.equal(emailProviderReady({...env,ZOHO_REGION:'unknown'}),false);
+ const first=await db.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE event_type='account.signup.alert.v1' AND status='pending'").first();
+ assert.ok(first.n>0);
+ const previousFetch=globalThis.fetch,notifications=[];let oauthCalls=0;
+ globalThis.fetch=async(url,options)=>{
+  if(url==='https://accounts.zoho.com/oauth/v2/token'){
+   oauthCalls++;assert.equal(options.method,'POST');
+   assert.ok(String(options.body).includes('grant_type=refresh_token'));
+   return Response.json({access_token:'test-access'});
+  }
+  assert.equal(url,'https://mail.zoho.com/api/accounts/123456789/messages');
+  assert.equal(options.headers.Authorization,'Zoho-oauthtoken test-access');
+  const body=JSON.parse(options.body);
+  assert.equal(body.toAddress,'info@cryptoinvestmentvault.com');
+  assert.equal(body.fromAddress,'info@cryptoinvestmentvault.com');
+  assert.match(body.subject,/New account created/);
+  assert.doesNotMatch(body.content,/password_hash|session_cookie|private.key|recovery phrase/);
+  notifications.push(body);
+  return Response.json({status:{code:200},data:{messageId:'zoho-'+notifications.length}});
+ };
+ try{
+  for(let i=0;i<5;i++)await deliverEmails(env);
+  assert.equal(notifications.length,first.n);
+  assert.ok(oauthCalls>0);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE event_type='account.signup.alert.v1' AND status='pending'").first()).n,0);
+  assert.ok((await db.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE event_type='account.welcome.v1' AND status='pending'").first()).n>0);
+  await deliverEmails(env);assert.equal(notifications.length,first.n,'Sent operator alert must not re-send');
+ }finally{globalThis.fetch=previousFetch}
 });
 
 test('migration removes campaign attribution, preserves member history and redirects legacy member URLs',async()=>{
