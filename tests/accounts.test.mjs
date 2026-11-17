@@ -232,3 +232,29 @@ test('Big 7 market data uses one verified provider response, D1 cache and rate-l
   assert.ok(row.response_json.includes('100000.25'));
  }finally{globalThis.fetch=prior}
 });
+
+test('calendar YTD uses January 1 history, shared leases, cached baselines and honest missing-data states',async()=>{
+ const built=await build({entryPoints:['src/market-ytd.ts'],bundle:true,write:false,format:'esm',platform:'node'});
+ const {marketYtd}=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
+ const env={DB:db,COINGECKO_DEMO_API_KEY:'test-only-key'},year=new Date().getUTCFullYear();
+ const assets=['BTC','ETH','SOL','XRP','BNB','ADA','DOGE'].map(symbol=>({symbol,priceUsd:100,change24h:1.25}));
+ const seed=()=>db.prepare('UPDATE market_data_cache SET response_json=?,updated_at_ms=?,lease_until_ms=0,next_attempt_ms=0 WHERE cache_key=?').bind(JSON.stringify({source:'CoinGecko',asOf:new Date().toISOString(),assets}),Date.now(),'big7-usd-v1').run();
+ await seed();let calls=0;const prior=globalThis.fetch;
+ globalThis.fetch=async(url,options)=>{calls++;assert.equal(options.headers['x-cg-demo-api-key'],'test-only-key');assert.equal(new URL(url).searchParams.get('date'),'01-01-'+year);assert.match(new URL(url).pathname,/\/coins\/(bitcoin|ethereum|solana|ripple|binancecoin|cardano|dogecoin)\/history$/);return Response.json({market_data:{current_price:{usd:80}}})};
+ try{
+  assert.equal((await marketYtd(env,'UNKNOWN')).status,404);assert.equal(calls,0);
+  const both=await Promise.all([marketYtd(env,'BTC'),marketYtd(env,'BTC')]);
+  const values=await Promise.all(both.map(r=>r.json()));assert.ok(values.some(x=>x.changePct===25));assert.equal(calls,1,'Only one baseline history request across concurrent visitors');
+  const first=await (await marketYtd(env,'BTC')).json();assert.equal(first.changePct,25);assert.equal(first.startAt,year+'-01-01T00:00:00.000Z');assert.equal(first.startPriceUsd,80);assert.equal(first.stale,false);assert.equal(calls,1);
+  assets[0].priceUsd=60;await seed();assert.equal((await (await marketYtd(env,'BTC')).json()).changePct,-25);assert.equal(calls,1,'Current price updates reuse the year-start baseline');
+  globalThis.fetch=async()=>{calls++;return Response.json({error:'rate limited'},{status:429})};
+  assert.equal((await (await marketYtd(env,'ETH')).json()).changePct,null);assert.equal(calls,2);
+  assert.equal((await (await marketYtd(env,'ETH')).json()).changePct,null);assert.equal(calls,2,'History failures must back off');
+  globalThis.fetch=async()=>{calls++;return Response.json({market_data:{current_price:{usd:0}}})};
+  assert.equal((await (await marketYtd(env,'SOL')).json()).changePct,null);
+  const missing=await marketYtd({DB:db},'DOGE');assert.equal((await missing.json()).changePct,null);
+  await db.prepare('UPDATE market_data_cache SET response_json=?,updated_at_ms=? WHERE cache_key=?').bind(JSON.stringify({asOf:(year-1)+'-12-31T23:59:00.000Z',assets}),Date.now(),'big7-usd-v1').run();
+  assert.equal((await (await marketYtd(env,'BTC')).json()).changePct,null,'Never combine a previous-year snapshot with the new year baseline');
+  await seed();
+ }finally{globalThis.fetch=prior}
+});

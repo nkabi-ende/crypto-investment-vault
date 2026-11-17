@@ -35,6 +35,8 @@ function render(data,fromBrowser=false){
  const label=Number.isFinite(at.getTime())?at.toLocaleString():'time unavailable';
  status.textContent=(stale?'Previous verified snapshot':'CoinGecko spot prices')+' · Updated '+label+(stale?' · Delayed':' · Refreshes about every 10 min');
  status.dataset.state=stale?'stale':'fresh';
+ window.civMarketSnapshot={...data,stale};
+ window.dispatchEvent(new CustomEvent('civ:market-snapshot',{detail:window.civMarketSnapshot}));
  return true;
 }
 function problem(code){

@@ -5,6 +5,7 @@ import { deliverEmails } from './email';
 import { membership } from './membership';
 import { marketPulse,cryptoHeadlines } from './market-intelligence';
 import { marketPrices } from './market-prices';
+import { marketYtd } from './market-ytd';
 import { paymentConfig,pilotAllowed,mainnetPreflight,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 type Bindings = PaymentEnv & { AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
@@ -346,6 +347,7 @@ app.get('/api/celo/payout-signer/status',c=>c.json({mode:'disabled',mainnetSigni
 app.get('/api/market-pulse',c=>marketPulse(c.env,c.req.raw,c.executionCtx));
 app.get('/api/headlines',c=>cryptoHeadlines(c.env,c.req.raw,c.executionCtx));
 app.get('/api/markets',c=>marketPrices(c.env));
+app.get('/api/markets/:symbol/ytd',c=>marketYtd(c.env,c.req.param('symbol')));
 const disclosureCategories=['performance','custody','legal','fees','risk','team','withdrawals'] as const;
 app.get('/api/transparency',async c=>{
   const disclosures=await c.env.DB.prepare("SELECT category,title,summary,status,evidence_url,verified_by,verified_at,published_at,updated_at FROM disclosures WHERE status IN ('published','verified') ORDER BY category,updated_at DESC").all();
