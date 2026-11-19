@@ -16,8 +16,8 @@ import { marketPrices } from './market-prices';
 import { marketYtd } from './market-ytd';
 import { paymentConfig,pilotAllowed,mainnetPreflight,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-type Bindings = PaymentEnv & { API_LIMITER: RateLimit; AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; EMAIL_PROVIDER?: MailEnvironment['EMAIL_PROVIDER']; SIGNUP_ALERTS_ENABLED?: string; SIGNUP_ALERT_TO?: string; ZOHO_REGION?: string; ZOHO_MAIL_ACCOUNT_ID?: string; ZOHO_FROM_ADDRESS?: string; ZOHO_CLIENT_ID?: string; ZOHO_CLIENT_SECRET?: string; ZOHO_REFRESH_TOKEN?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
-type SimulationBindings = Bindings & { SHAKA_SIM_ADMIN_IDS?: string };
+type Bindings = PaymentEnv & { CIV_OWNER_USER_ID?: string; CIV_OWNER_EMAIL?: string; API_LIMITER: RateLimit; AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; EMAIL_PROVIDER?: MailEnvironment['EMAIL_PROVIDER']; SIGNUP_ALERTS_ENABLED?: string; SIGNUP_ALERT_TO?: string; ZOHO_REGION?: string; ZOHO_MAIL_ACCOUNT_ID?: string; ZOHO_FROM_ADDRESS?: string; ZOHO_CLIENT_ID?: string; ZOHO_CLIENT_SECRET?: string; ZOHO_REFRESH_TOKEN?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
+type SimulationBindings = Bindings;
 const app = new Hono<{Bindings:SimulationBindings}>();
 app.onError((error,c)=>{console.error('CIV request failed',c.req.path,error instanceof Error ? error.name : 'UnknownError');return c.json({error:'Account service temporarily unavailable. Please try again.'},503)});
 const smallBody=bodyLimit({maxSize:16384,onError:c=>c.json({error:'Request too large'},413)});
@@ -52,7 +52,7 @@ function currentUser<E extends {Bindings:Bindings}>(c:import('hono').Context<E>)
    EXISTS(SELECT 1 FROM kyc_reviewers r WHERE r.user_id=u.id AND r.enabled=1) AS reviewer
    FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id_hash=? AND s.security_version=1`).bind(hash).first<Member&{expires_at:number,authenticated_at:number,last_seen_at:number,reviewer:number}>();
   if(!row)return null;
-  const privileged=row.reviewer||isSimulationAdmin(c.env,row.id);
+  const privileged=row.reviewer||isVaultOwner(c.env,row);
   const idle=privileged?15*60000:86400000,absolute=privileged?8*3600000:7*86400000;
   if(row.expires_at<=now||row.authenticated_at<=0||row.last_seen_at<=0||row.last_seen_at>now+60000||row.authenticated_at>now+60000||now-row.last_seen_at>=idle||now-row.authenticated_at>=absolute)return null;
   if(now-row.last_seen_at>=60000)await c.env.DB.prepare('UPDATE sessions SET last_seen_at=? WHERE id_hash=? AND last_seen_at<?').bind(now,hash,now).run();
@@ -87,7 +87,7 @@ app.use('/api/*',async(c,next)=>{
  const path=c.req.path;
  if(path.startsWith('/api/investor/')||path.startsWith('/api/admin/')||path.startsWith('/api/celo/testnet/')||(path.startsWith('/api/payments/')&&path!=='/api/payments/config')){
   const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
-  if(path.startsWith('/api/admin/')){const permitted=path.startsWith('/api/admin/shaka-simulation')?isSimulationAdmin(c.env,user.id):!!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();if(!permitted)return c.json({error:'Administrator access required'},403)}
+  if(path.startsWith('/api/admin/') && !isVaultOwner(c.env,user))return c.json({error:'Administrator access required'},403);
  }
  await next();
 });
@@ -119,13 +119,15 @@ app.get('/api/investor/shaka-simulation',async c=>{
  return user?c.json(await simulationLedger(c.env.DB,user.id)):c.json({error:'Unauthorized'},401);
 });
 const simulationAdminApp=new Hono<{Bindings:SimulationBindings;Variables:{adminId:string}}>();
-function isSimulationAdmin(env:SimulationBindings,userId:string){
- return env.SHAKA_SIM_ADMIN_IDS?.split(',').some(id=>id.trim()===userId) ?? false;
+function isVaultOwner(env:Bindings,user:Member){
+ const ownerId=env.CIV_OWNER_USER_ID?.trim();
+ const ownerEmail=env.CIV_OWNER_EMAIL?.trim().toLowerCase();
+ return !!ownerId && !!ownerEmail && user.id===ownerId && user.email.toLowerCase()===ownerEmail;
 }
 simulationAdminApp.use('*',async(c,next)=>{
  const user=await currentUser(c);
  if(!user)return c.json({error:'Unauthorized'},401);
- if(!isSimulationAdmin(c.env,user.id))return c.json({error:'Forbidden'},403);
+ if(!isVaultOwner(c.env,user))return c.json({error:'Forbidden'},403);
  c.set('adminId',user.id);
  await next();
 });
@@ -507,8 +509,8 @@ app.get('/join',entryPage);
 app.get('/dashboard',entryPage);
 app.on('GET',['/admin','/admin/'],async c=>{
  const user=await currentUser(c);if(!user)return c.redirect('/join?returnTo=%2Fadmin',303);
- const reviewer=!!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();
- const operator=isSimulationAdmin(c.env,user.id);
+ const reviewer=isVaultOwner(c.env,user) && !!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();
+ const operator=isVaultOwner(c.env,user);
  c.header('Content-Security-Policy',"default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
  return c.html(adminPage(reviewer,operator),reviewer||operator?200:403);
 });
@@ -518,7 +520,7 @@ app.on('GET',['/dashboard/mirror','/dashboard/mirror/'],async c=>{
  c.header('X-Robots-Tag','noindex, nofollow');
  c.header('Content-Security-Policy',"default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
  const user=await currentUser(c);
- if(!user||!isSimulationAdmin(c.env,user.id))return c.notFound();
+ if(!user||!isVaultOwner(c.env,user))return c.notFound();
  return c.html(dashboardMirror);
 });
 app.get('/r/:code',async c=>{
@@ -538,7 +540,7 @@ app.get('/review-identity*',async c=>{
  const path=c.req.path;
  if(!['/review-identity','/review-identity/','/review-identity.html','/review-identity.js'].includes(path))return c.text('Not found',404);
  const user=await currentUser(c);if(!user)return path.endsWith('.js')?c.text('Unauthorized',401):c.redirect('/join',303);
- if(!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first())return c.text('Access denied',403);
+ if(!isVaultOwner(c.env,user) || !await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first())return c.text('Access denied',403);
  const target=path.endsWith('.js')?'/review-identity.js':'/review-identity';
  return c.env.ASSETS.fetch(new Request(new URL(target,c.req.url)));
 });
