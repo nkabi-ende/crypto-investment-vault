@@ -9,7 +9,7 @@ import { adaLedger } from './ada';
 import { kycStatus,registerKycRoutes } from './kyc';
 import { shakaMethodology } from './shaka';
 import { dashboardMirror } from './dashboard-mirror';
-import { adminPage } from './admin-page';
+import { adminPage,platformReport } from './admin-page';
 import { closeShakaSimulation,scheduleSimulation,simulationAdmin,simulationLedger,verifySimulationMember } from './shaka-simulation';
 import { marketPulse,cryptoHeadlines } from './market-intelligence';
 import { marketPrices } from './market-prices';
@@ -512,7 +512,11 @@ app.on('GET',['/admin','/admin/'],async c=>{
  const reviewer=isVaultOwner(c.env,user) && !!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();
  const operator=isVaultOwner(c.env,user);
  c.header('Content-Security-Policy',"default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
- return c.html(adminPage(reviewer,operator),reviewer||operator?200:403);
+ c.header('Cache-Control','private, no-store');
+ const page=Number(c.req.query('page') || 1);
+ if(!Number.isSafeInteger(page)||page<1||page>Math.floor(Number.MAX_SAFE_INTEGER/25))return c.text('Invalid page',400);
+ const report=operator?await platformReport(c.env.DB,c.req.query('view') || 'accounts',page):'';
+ return c.html(adminPage(reviewer,operator,report),reviewer||operator?200:403);
 });
 
 app.on('GET',['/dashboard/mirror','/dashboard/mirror/'],async c=>{
