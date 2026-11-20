@@ -2,7 +2,7 @@ import { derivePassword } from './password-digest';
 import { Hono } from 'hono';
 import { secureFetch,sessionCookieName } from './security';
 import { bodyLimit } from 'hono/body-limit';
-import { deliverEmails,emailProviderReady,type MailEnvironment } from './email';
+import { deliverEmails,emailProviderReady,sendPasswordReset,type MailEnvironment } from './email';
 import { membership } from './membership';
 import { acceptAffiliateTerms,affiliateConsentVersion,affiliateSummary,leaderboard } from './circle';
 import { adaLedger } from './ada';
@@ -60,19 +60,27 @@ function currentUser<E extends {Bindings:Bindings}>(c:import('hono').Context<E>)
   return {id:row.id,email:row.email};
  })();memberRequests.set(c.req.raw,resolve);return resolve;
 }
-async function session(c:import('hono').Context<{Bindings:Bindings}>, id:string, accountWrites:D1PreparedStatement[] = []) {
+type LoginGuard = {email:string,password_reset_version:number};
+async function session(c:import('hono').Context<{Bindings:Bindings}>, id:string, accountWrites:D1PreparedStatement[] = [], login?:LoginGuard) {
   const token = rand();
   const lifetimeSeconds = 7 * 86400;
-  const insertSession = c.env.DB.prepare('INSERT INTO sessions(id_hash,user_id,expires_at,security_version,authenticated_at,last_seen_at) VALUES(?,?,?,1,?,?)')
-    .bind(await digest(token), id, Date.now() + lifetimeSeconds * 1000,Date.now(),Date.now());
+  const sessionValues = [await digest(token), id, Date.now() + lifetimeSeconds * 1000, Date.now(), Date.now()] as const;
+  const insertSession = login
+    ?c.env.DB.prepare(`INSERT INTO sessions(id_hash,user_id,expires_at,security_version,authenticated_at,last_seen_at)
+       SELECT ?,?,?,1,?,? FROM users WHERE id=? AND email=? AND password_reset_version=? AND access_state='active'`)
+       .bind(...sessionValues,id,login.email,login.password_reset_version)
+    :c.env.DB.prepare('INSERT INTO sessions(id_hash,user_id,expires_at,security_version,authenticated_at,last_seen_at) VALUES(?,?,?,1,?,?)')
+       .bind(...sessionValues);
   const oldToken=getCookie(c,sessionCookieName(c.req.url));
   const retire=oldToken?[c.env.DB.prepare('DELETE FROM sessions WHERE id_hash=?').bind(await digest(oldToken))]:[];
-  await c.env.DB.batch([...accountWrites,...retire,c.env.DB.prepare('DELETE FROM sessions WHERE user_id=? AND id_hash NOT IN (SELECT id_hash FROM sessions WHERE user_id=? ORDER BY authenticated_at DESC,id_hash LIMIT 4)').bind(id,id),insertSession]);
+  const results = await c.env.DB.batch([...accountWrites,...retire,c.env.DB.prepare('DELETE FROM sessions WHERE user_id=? AND id_hash NOT IN (SELECT id_hash FROM sessions WHERE user_id=? ORDER BY authenticated_at DESC,id_hash LIMIT 4)').bind(id,id),insertSession]);
+  if(!results.at(-1)?.meta.changes)return false;
   setCookie(c, sessionCookieName(c.req.url), token, {
     httpOnly: true, secure: new URL(c.req.url).protocol === 'https:',
     sameSite: 'Strict', path: '/', maxAge: lifetimeSeconds
   });
   deleteCookie(c,'civ_session',{path:'/',secure:true,httpOnly:true,sameSite:'Strict'});
+  return true;
 }
 app.use('/api/*',async(c,next)=>{c.header('Cache-Control','no-store');c.header('X-Content-Type-Options','nosniff');c.header('Referrer-Policy','no-referrer');if(c.req.method!=='GET'&&c.req.method!=='HEAD'){const origin=c.req.header('origin');const url=new URL(c.req.url);if(origin&&origin!==url.origin)return c.json({error:'Cross-origin requests are not allowed'},403)}await next()});
 // Reject abusive authentication traffic before password derivation or D1 reads.
@@ -240,7 +248,7 @@ app.post('/api/auth/login',async c=>{
  const now=Date.now();
  const attempts=await c.env.DB.prepare('SELECT locked_until FROM auth_attempts WHERE email=?').bind(email).first<{locked_until:number}>();
  if(attempts&&attempts.locked_until>now){c.header('Retry-After',String(Math.ceil((attempts.locked_until-now)/1000)));return c.json({error:'Too many attempts. Try again later.'},429)}
- const user=await c.env.DB.prepare("SELECT id,email,password_hash,salt FROM users WHERE email=? AND access_state='active'").bind(email).first<{id:string,email:string,password_hash:string,salt:string}>();
+ const user=await c.env.DB.prepare("SELECT id,email,password_hash,salt,password_reset_version FROM users WHERE email=? AND access_state='active'").bind(email).first<LoginGuard&{id:string,password_hash:string,salt:string}>();
  const check=await passwordHash(password,user?.salt||'v4:fallback');
  if(!user||!same(check,user.password_hash)){
   await c.env.DB.prepare(`INSERT INTO auth_attempts(email,attempts,window_start,locked_until) VALUES(?,1,?,0)
@@ -253,8 +261,62 @@ app.post('/api/auth/login',async c=>{
  }
  const writes=[c.env.DB.prepare('DELETE FROM auth_attempts WHERE email=?').bind(email)];
  if(!user.salt.startsWith('v4:')){const salt='v4:'+rand(16);writes.push(c.env.DB.prepare('UPDATE users SET password_hash=?,salt=? WHERE id=? AND password_hash=?').bind(await passwordHash(password,salt),salt,user.id,user.password_hash))}
- await session(c,user.id,writes);
+ if(!await session(c,user.id,writes,user))return c.json({error:'Invalid credentials'},401);
  return c.json({user:{id:user.id,email:user.email}});
+});
+const invalidReset = 'This reset link is invalid or has expired. Request a new link.';
+const resetTokenPattern = /^[A-Za-z0-9_-]{43}$/;
+const resetLifetime = 30 * 60000;
+const resetCooldown = 2 * 60000;
+
+async function issuePasswordReset(env:Bindings,email:string) {
+ const token = rand();
+ const now = Date.now();
+ // Atomic per-account cooldown. A later request never invalidates an earlier link.
+ const issued = await env.DB.prepare(`INSERT INTO password_resets(token_hash,user_id,requested_at,expires_at)
+   SELECT ?,u.id,?,? FROM users u WHERE u.email=? AND u.access_state='active'
+   AND NOT EXISTS(SELECT 1 FROM password_resets r WHERE r.user_id=u.id AND r.requested_at>?)`)
+   .bind(await digest(token),now,now+resetLifetime,email,now-resetCooldown).run();
+ if(issued.meta.changes)await sendPasswordReset(env,email,token);
+}
+
+app.post('/api/auth/password-reset/request',async c=>{
+ const body=await c.req.json().catch(()=>null);
+ const email=typeof body?.email==='string'?body.email.trim().toLowerCase():'';
+ if(!emailPattern.test(email)||email.length>254)return c.json({error:'Enter a valid email address'},400);
+ if(!emailProviderReady(c.env))return c.json({error:'Password reset email is unavailable. Please contact CIV support.'},503);
+ // Keep both response content and response timing independent of account existence.
+ c.executionCtx.waitUntil(issuePasswordReset(c.env,email).catch(()=>console.error('CIV password reset dispatch failed')));
+ return c.json({ok:true},202);
+});
+
+app.post('/api/auth/password-reset/confirm',async c=>{
+ const body=await c.req.json().catch(()=>null);
+ const {token,password}=body??{};
+ if(typeof token!=='string'||!resetTokenPattern.test(token))return c.json({error:invalidReset},400);
+ if(typeof password!=='string'||password.length<12||password.length>128)
+  return c.json({error:'Use a password of 12–128 characters'},400);
+ const tokenHash=await digest(token);
+ const reset=await c.env.DB.prepare('SELECT user_id FROM password_resets WHERE token_hash=? AND expires_at>?')
+  .bind(tokenHash,Date.now()).first<{user_id:string}>();
+ if(!reset)return c.json({error:invalidReset},400);
+
+ const salt='v4:'+rand(16);
+ const hash=await passwordHash(password,salt);
+ const applied = 'SELECT 1 FROM users WHERE id=? AND salt=?';
+ const [change] = await c.env.DB.batch([
+  c.env.DB.prepare(`UPDATE users SET salt=?,password_hash=?,password_reset_version=password_reset_version+1
+    WHERE id=? AND access_state='active' AND EXISTS(
+      SELECT 1 FROM password_resets WHERE token_hash=? AND user_id=users.id AND expires_at>?
+    )`).bind(salt,hash,reset.user_id,tokenHash,Date.now()),
+  c.env.DB.prepare('DELETE FROM password_resets WHERE user_id=? AND EXISTS('+applied+')').bind(reset.user_id,reset.user_id,salt),
+  c.env.DB.prepare('DELETE FROM sessions WHERE user_id=? AND EXISTS('+applied+')').bind(reset.user_id,reset.user_id,salt),
+  c.env.DB.prepare('DELETE FROM auth_attempts WHERE email=(SELECT email FROM users WHERE id=? AND salt=?)').bind(reset.user_id,salt),
+  c.env.DB.prepare("INSERT INTO audit_events(id,user_id,event_type) SELECT ?,id,'password_reset' FROM users WHERE id=? AND salt=?")
+   .bind(crypto.randomUUID(),reset.user_id,salt)
+ ]);
+ if(!change.meta.changes)return c.json({error:invalidReset},400);
+ return c.json({ok:true});
 });
 app.post('/api/auth/logout',async c=>{const token=getCookie(c,sessionCookieName(c.req.url));if(token)await c.env.DB.prepare('DELETE FROM sessions WHERE id_hash=?').bind(await digest(token)).run();deleteCookie(c,sessionCookieName(c.req.url),{path:'/',secure:new URL(c.req.url).protocol==='https:',httpOnly:true,sameSite:'Strict'});deleteCookie(c,'civ_session',{path:'/',secure:true,httpOnly:true,sameSite:'Strict'});return c.json({ok:true})});
 app.get('/api/me',async c=>{const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);const portfolio=await c.env.DB.prepare('SELECT cash_usdt,updated_at FROM portfolios WHERE user_id=?').bind(user.id).first();return c.json({user,portfolio,fundingEnabled:false,product:'The Big 7'})});
@@ -499,8 +561,9 @@ app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The
 app.get('/api/ready',async c=>{
  // Preparing these queries validates required columns as well as table presence.
  await c.env.DB.batch([
-  c.env.DB.prepare('SELECT id,email,password_hash,salt,access_state FROM users LIMIT 0'),
+  c.env.DB.prepare('SELECT id,email,password_hash,salt,access_state,password_reset_version FROM users LIMIT 0'),
   c.env.DB.prepare('SELECT email,attempts,window_start,locked_until FROM auth_attempts LIMIT 0'),
+  c.env.DB.prepare('SELECT token_hash,user_id,requested_at,expires_at FROM password_resets LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,display_name,terms_version FROM account_profiles LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,code FROM referral_attributions LIMIT 0'),
   c.env.DB.prepare('SELECT status,available_at,lease_until FROM email_outbox LIMIT 0'),
@@ -533,7 +596,7 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT user_id,terms_version,accepted_at FROM affiliate_consents LIMIT 0'),
   c.env.DB.prepare('SELECT security_version,authenticated_at,last_seen_at FROM sessions LIMIT 0')
  ]);
- return c.json({ready:true,schema:23,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:24,passwordResetEnabled:emailProviderReady(c.env),membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.
@@ -549,6 +612,12 @@ async function entryPage(c:import('hono').Context<{Bindings:Bindings}>) {
 }
 app.get('/join',entryPage);
 app.get('/dashboard',entryPage);
+app.get('/reset-password',async c=>{
+ c.header('X-Robots-Tag','noindex, nofollow, noarchive');
+ const page=await c.env.ASSETS.fetch(new Request(new URL('/reset-password',c.req.url)));
+ if(!page.ok)return c.text('Password reset is temporarily unavailable.',503);
+ return c.html(await page.text());
+});
 app.on('GET',['/admin','/admin/'],async c=>{
  const user=await currentUser(c);if(!user)return c.redirect('/join?returnTo=%2Fadmin',303);
  const reviewer=isVaultOwner(c.env,user) && !!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();
@@ -602,6 +671,7 @@ export default {fetch:(request:Request,env:SimulationBindings,ctx:ExecutionConte
  ctx.waitUntil(reconcilePayments(env));
  ctx.waitUntil(env.DB.batch([
   env.DB.prepare('DELETE FROM sessions WHERE expires_at<?').bind(Date.now()),
+  env.DB.prepare('DELETE FROM password_resets WHERE expires_at<=?').bind(Date.now()),
   env.DB.prepare('DELETE FROM referral_click_claims WHERE expires_at<?').bind(Date.now()),
   env.DB.prepare('DELETE FROM auth_attempts WHERE window_start<? AND locked_until<?').bind(Date.now()-86400000,Date.now())
  ]));

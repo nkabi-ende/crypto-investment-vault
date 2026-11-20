@@ -1,14 +1,23 @@
 import { test, before, after } from 'node:test';
-import {pbkdf2Sync,randomUUID} from 'node:crypto';
+import {createHash,pbkdf2Sync,randomUUID} from 'node:crypto';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 let mf, db;
 const origin='https://cryptoinvestmentvault.com';
+const resetMail=[];
+async function mockZoho(request){
+ if(request.url==='https://accounts.zoho.com/oauth/v2/token')return Response.json({access_token:'test-access'});
+ assert.equal(request.url,'https://mail.zoho.com/api/accounts/12345/messages');
+ assert.equal(request.headers.get('Authorization'),'Zoho-oauthtoken test-access');
+ resetMail.push(await request.json());
+ return Response.json({status:{code:200},data:{messageId:'reset-test'}});
+}
+
 before(async()=>{
  const result=await build({entryPoints:['src/index.ts'],bundle:true,write:false,format:'esm',platform:'node',target:'es2022',external:['node:crypto']});
- mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'civ-test',modules:true,script:result.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{API_LIMITER:{namespace_id:'1424211761',simple:{limit:1000,period:60}},AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:20,period:60}}},assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:true},bindings:{APP_ORIGIN:origin,EMAIL_DELIVERY_ENABLED:'false'}}]}));
+ mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'civ-test',modules:true,script:result.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{API_LIMITER:{namespace_id:'1424211761',simple:{limit:1000,period:60}},AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:20,period:60}}},assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:true},outboundService:mockZoho,bindings:{APP_ORIGIN:origin,EMAIL_DELIVERY_ENABLED:'false',EMAIL_PROVIDER:'zoho',ZOHO_MAIL_ACCOUNT_ID:'12345',ZOHO_FROM_ADDRESS:'info@cryptoinvestmentvault.com',ZOHO_CLIENT_ID:'test-client',ZOHO_CLIENT_SECRET:'test-secret',ZOHO_REFRESH_TOKEN:'test-refresh'}}]}));
  db=await mf.getD1Database('DB');
  for(const file of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort()){
   const sql=(await readFile('migrations/'+file,'utf8')).replace(/--[^\n]*/g,'');
@@ -65,6 +74,52 @@ test('per-account lockout survives requests from different IPs and shared IP lim
  const locked=await call('/api/auth/login',{method:'POST',body:payload('unknown@example.com')});assert.equal(locked.r.status,429);assert.ok(Number(locked.r.headers.get('retry-after'))>0);
  let limited=false;for(let i=0;i<22;i++){const a=await call('/api/auth/register',{method:'POST',body:{},address:'203.0.113.88'});if(a.r.status===429){limited=true;break}}assert.ok(limited);
 });
+test('password reset sends a private link, rotates credentials once and revokes existing sessions',async()=>{
+ const email='reset-fixture@example.invalid';
+ const created=await call('/api/auth/register',{method:'POST',body:payload(email)});
+ assert.equal(created.r.status,201);
+ const page=await mf.dispatchFetch(origin+'/reset-password');
+ assert.equal(page.status,200);
+ assert.equal(page.headers.get('Referrer-Policy'),'no-referrer');
+ assert.match(page.headers.get('Cache-Control'),/no-store/);
+ assert.match(await page.text(),/id="completeReset"/);
+ const request=email=>call('/api/auth/password-reset/request',{method:'POST',body:{email}});
+ const [real,unknown]=await Promise.all([request(email),request('unknown-reset@example.invalid')]);
+ assert.equal(real.r.status,202);
+ assert.equal(unknown.r.status,202);
+ assert.deepEqual(real.data,unknown.data);
+ const deadline=Date.now()+3000;
+ while(!resetMail.length&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+ assert.equal(resetMail.length,1);
+ assert.equal(resetMail[0].toAddress,email);
+ assert.equal(resetMail[0].subject,'Reset your CIV password');
+ const link=new URL(resetMail[0].content.match(/href="([^"]+)"/)[1]);
+ assert.equal(link.origin,origin);
+ assert.equal(link.pathname,'/reset-password');
+ assert.equal(link.search,'');
+ const token=link.hash.slice(1);
+ const tokenHash=createHash('sha256').update(token).digest('base64url');
+ const stored=await db.prepare('SELECT token_hash,requested_at,expires_at FROM password_resets WHERE user_id=?').bind(created.data.user.id).first();
+ assert.equal(stored.token_hash,tokenHash);
+ assert.equal(stored.expires_at-stored.requested_at,30*60000);
+ await request(email);
+ assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM password_resets').first()).n,1);
+ const confirm=(token,password)=>call('/api/auth/password-reset/confirm',{method:'POST',body:{token,password}});
+ const password='updated CIV passphrase 582';
+ await db.prepare('UPDATE password_resets SET expires_at=1 WHERE token_hash=?').bind(tokenHash).run();
+ assert.equal((await confirm(token,password)).r.status,400);
+ await db.prepare('UPDATE password_resets SET expires_at=? WHERE token_hash=?').bind(Date.now()+60000,tokenHash).run();
+ assert.equal((await confirm(token,'short')).r.status,400);
+ const outcome=await Promise.all([confirm(token,password),confirm(token,password)]);
+ assert.deepEqual(outcome.map(x=>x.r.status).sort(),[200,400]);
+ assert.equal(outcome.find(x=>x.r.status===200).r.headers.get('set-cookie'),null);
+ assert.equal((await call('/api/me',{cookie:created.cookie})).r.status,401);
+ assert.equal((await call('/api/auth/login',{method:'POST',body:payload(email)})).r.status,401);
+ const login=await call('/api/auth/login',{method:'POST',body:{email,password}});
+ assert.equal(login.r.status,200);
+ assert.equal(login.data.user.id,created.data.user.id);
+ assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM audit_events WHERE user_id=? AND event_type='password_reset'").bind(created.data.user.id).first()).n,1);
+});
 test('invalid attribution is ignored, expired sessions fail and members get a stable referral',async()=>{
  const made=await call('/api/auth/register',{method:'POST',body:payload('invalid-ref@example.com','<script>')});assert.equal(made.r.status,201);
  assert.equal(await db.prepare('SELECT * FROM referral_attributions WHERE user_id=?').bind(made.data.user.id).first(),null);
@@ -73,7 +128,7 @@ test('invalid attribution is ignored, expired sessions fail and members get a st
  await db.prepare('UPDATE sessions SET expires_at=1 WHERE user_id=?').bind(made.data.user.id).run();assert.equal((await call('/api/me',{cookie:made.cookie})).r.status,401);
 });
 test('readiness validates required schema, and payment rails remain correctly disabled',async()=>{
- const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,23);
+ const ready=await call('/api/ready');assert.equal(ready.r.status,200);assert.equal(ready.data.schema,24);
  assert.equal((await call('/api/celo/config')).data.ready,false);
  const made=await call('/api/auth/register',{method:'POST',body:payload('payment@example.com')});
  assert.equal((await call('/api/celo/testnet/intents',{method:'POST',cookie:made.cookie,body:{amountUsd:100,sender:'0x'+'1'.repeat(40)}})).r.status,503);

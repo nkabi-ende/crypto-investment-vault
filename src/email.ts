@@ -109,6 +109,17 @@ async function sendEmail(env:MailEnvironment,jobId:string,to:string,message:Outb
  return result.id;
 }
 
+export async function sendPasswordReset(env:MailEnvironment, to:string, token:string) {
+ const resetPage = new URL('/reset-password', env.APP_ORIGIN);
+ // A fragment keeps the token out of HTTP request URLs and access logs.
+ resetPage.hash = token;
+ await sendEmail(env, crypto.randomUUID(), to, {
+  subject: 'Reset your CIV password',
+  text: 'Use this link within 30 minutes to reset your CIV password. If you did not request this, you can ignore this email.\n\n' + resetPage.href,
+  html: '<h1>Reset your CIV password</h1><p>Use this link within 30 minutes.</p><p><a href="' + escapeHtml(resetPage.href) + '">Choose a new password</a></p><p>If you did not request this, you can ignore this email.</p>'
+ }, () => zohoAccessToken(env));
+}
+
 /** Process opted-in outbox event types. No third-party delivery is required for signup success. */
 export async function deliverEmails(env:MailEnvironment) {
  if(!emailProviderReady(env))return;
