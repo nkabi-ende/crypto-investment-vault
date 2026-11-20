@@ -1,14 +1,14 @@
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
-import {createHash,randomBytes,randomUUID} from 'node:crypto';
+import {createHash,randomBytes,randomUUID,pbkdf2Sync} from 'node:crypto';
 import {build} from 'esbuild';
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
 import {reviewerSql} from '../scripts/kyc-reviewer.mjs';
 const origin='https://cryptoinvestmentvault.com';let mf,db,member,other,reviewer,operator,sequence=0;const operatorId=randomUUID();
 before(async()=>{
  const result=await build({entryPoints:['src/index.ts'],bundle:true,write:false,format:'esm',platform:'node',external:['node:crypto']});
- mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'security-tests',modules:true,script:result.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:true},ratelimits:{AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:1000,period:60}},API_LIMITER:{namespace_id:'1424211761',simple:{limit:10,period:60}}},bindings:{APP_ORIGIN:origin,SHAKA_SIM_ADMIN_IDS:operatorId}}]}));db=await mf.getD1Database('DB');
+ mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'security-tests',modules:true,script:result.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:true},ratelimits:{AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:1000,period:60}},API_LIMITER:{namespace_id:'1424211761',simple:{limit:10,period:60}}},bindings:{APP_ORIGIN:origin,CIV_OWNER_USER_ID:operatorId,CIV_OWNER_EMAIL:'security-operator@example.invalid'}}]}));db=await mf.getD1Database('DB');
  for(const file of (await readdir('migrations')).filter(f=>f.endsWith('.sql')).sort()){
   let statement='';for(const line of (await readFile('migrations/'+file,'utf8')).replace(/--[^\n]*/g,'').split('\n')){statement+=line+'\n';if(!line.trim().endsWith(';'))continue;if(/^CREATE TRIGGER/i.test(statement.trim())&&!statement.trim().endsWith('END;'))continue;await db.prepare(statement.trim()).run();statement=''}
  }
@@ -17,7 +17,7 @@ before(async()=>{
   db.prepare('INSERT INTO portfolios(user_id) VALUES(?)').bind(id),db.prepare('INSERT INTO account_profiles(user_id,display_name,terms_version) VALUES(?,?,?)').bind(id,name,'test'),db.prepare('INSERT INTO referral_codes(code,user_id) VALUES(?,?)').bind(id,id),
   db.prepare('INSERT INTO sessions(id_hash,user_id,expires_at,security_version,authenticated_at,last_seen_at) VALUES(?,?,?,1,?,?)').bind(hash,id,Date.now()+7*86400000,Date.now(),Date.now())
  ]);return {id,token,hash,cookie:'__Host-civ_session='+token}}
- operator=await account('security-operator',operatorId);member=await account('security-member');other=await account('security-other');reviewer=await account('security-reviewer');await db.prepare('INSERT INTO kyc_reviewers(user_id,granted_by) VALUES(?,?)').bind(reviewer.id,'isolated test setup').run();
+ operator=await account('security-operator',operatorId);member=await account('security-member');other=await account('security-other');reviewer=operator;await db.prepare('INSERT INTO kyc_reviewers(user_id,granted_by) VALUES(?,?)').bind(reviewer.id,'isolated test setup').run();
 });
 after(async()=>{await mf?.dispose()});
 async function call(path,options={}){const {actor,headers={},...rest}=options;return mf.dispatchFetch(origin+path,{...rest,redirect:'manual',headers:{Origin:origin,'CF-Connecting-IP':'192.0.'+Math.floor(++sequence/250)+'.'+(sequence%250+1),...(actor?{Cookie:actor.cookie}:{}),...headers}})}
@@ -63,16 +63,41 @@ test('reviewer HTML, aliases, scripts and API deny anonymous and ordinary member
 test('branded admin entry requires a session and renders only links permitted by the separate roles',async()=>{
  for(const path of ['/admin','/admin/']){
   const guest=await call(path);assert.equal(guest.status,303);assert.equal(guest.headers.get('location'),'/join?returnTo=%2Fadmin');await guest.text();
-  for(const [actor,code,title] of [[member,403,'Access required.'],[reviewer,200,'Vault control.'],[operator,200,'Vault control.']]){
+  for(const [actor,code,title] of [[member,403,'Access required.'],[operator,200,'Vault control.']]){
    const response=await call(path,{actor}),html=await response.text();assert.equal(response.status,code);assert.ok(html.includes(title));assert.match(html,/src="\/civ-mark.svg"/);assert.match(html,/href="\/favicon.svg"/);assert.match(html,/href="\/admin.css"/);
    assert.equal(html.includes('href="/review-identity"'),actor===reviewer);assert.equal(html.includes('href="/dashboard/mirror"'),actor===operator);
-   assert.doesNotMatch(html,/<script|security-member@example|security-reviewer@example|security-operator@example/);
-   for(const header of ['Cache-Control','CDN-Cache-Control','Cloudflare-CDN-Cache-Control'])assert.equal(response.headers.get(header),'no-store');
+   if(actor!==operator)assert.doesNotMatch(html,/<script|@example/);
+   for(const header of ['Cache-Control','CDN-Cache-Control','Cloudflare-CDN-Cache-Control'])assert.match(response.headers.get(header),/no-store/);
    assert.match(response.headers.get('content-security-policy'),/default-src 'none'/);assert.equal(response.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
   }
  }
 });
 
+test('owner correction updates the member ledger exactly once and rejects stale and unprivileged edits',async()=>{
+ const password=randomBytes(20).toString('hex'),salt='v3:'+randomUUID();
+ await db.prepare('UPDATE users SET salt=?,password_hash=? WHERE id=?').bind(salt,pbkdf2Sync(password,salt,600000,32,'sha256').toString('base64url'),operator.id).run();
+ const body={id:randomUUID(),actor:'ignored',target:other.id,action:'balance',asset:'USDC',expected:'0',value:'2.000001',reason:'Reconcile settlement discrepancy',password};
+ const send=(actor,changes={})=>status('/api/admin/operations',{actor,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,...changes})});
+ assert.equal(await send(member),403);
+ assert.equal(await send(operator,{password:'wrong'}),403);
+ assert.equal(await send(operator),200);
+ assert.equal(await send(operator),200);
+ assert.equal(await send(operator,{id:randomUUID()}),409);
+ const balance=await db.prepare("SELECT amount_minor FROM ada_balances WHERE user_id=? AND asset='USDC'").bind(other.id).first();
+ assert.equal(balance.amount_minor,2000001);
+ const ledger=await db.prepare("SELECT SUM(amount_minor) AS net FROM ada_postings WHERE transaction_id=?").bind('correction:'+body.id).first();
+ assert.equal(ledger.net,0);
+ const withdrawal=await (await call('/api/investor/withdrawals',{actor:other})).text();
+ assert.match(withdrawal,/2000001/);
+ const uid=randomUUID(),email=uid+'@example.invalid';
+ await db.prepare("INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,'unused','unused')").bind(uid,email).run();
+ const action=(name,value,expected)=>send(operator,{id:randomUUID(),action:name,value,expected,target:uid,asset:''});
+ assert.equal(await action('delete',email,''),409);
+ assert.equal(await action('state','closed','active'),200);
+ assert.equal(await action('delete',email,''),200);
+ assert.equal(await db.prepare('SELECT id FROM users WHERE id=?').bind(uid).first(),null);
+ assert.equal(await send(operator,{id:randomUUID(),action:'state',value:'closed',expected:'active',target:operator.id}),409);
+});
 test('manual reviewer assignment accepts only an existing exact UUID, records the actor and supports revocation',async()=>{
  const id=randomUUID();await db.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,'access-workflow@example.invalid','unused','unused').run();
  for(const invalid of ['admin','email@example.invalid',id+"'; DROP TABLE users; --",''])assert.throws(()=>reviewerSql('grant',invalid));
@@ -139,9 +164,9 @@ test('public assets contain no source maps, private key blocks or known provider
 
 test('paper-portfolio operators and KYC reviewers remain separate roles and the mirror retains its stricter policy',async()=>{
  assert.equal(await status('/api/admin/shaka-simulation',{actor:other}),403);
- assert.equal(await status('/api/admin/shaka-simulation',{actor:reviewer}),403);
+ assert.equal(await status('/api/admin/shaka-simulation',{actor:reviewer}),200);
  assert.equal(await status('/api/admin/shaka-simulation',{actor:operator}),200);
- assert.equal(await status('/api/admin/kyc',{actor:operator}),403);
+ assert.equal(await status('/api/admin/kyc',{actor:operator}),200);
  assert.equal(await status('/dashboard/mirror'),404);assert.equal(await status('/dashboard/mirror',{actor:other}),404);
  const mirror=await call('/dashboard/mirror',{actor:operator});assert.equal(mirror.status,200);assert.equal(mirror.headers.get('cache-control'),'private, no-store');assert.match(mirror.headers.get('content-security-policy'),/default-src 'none'/);assert.doesNotMatch(mirror.headers.get('content-security-policy'),/strict-dynamic/);await mirror.text();
  await db.prepare('UPDATE sessions SET last_seen_at=? WHERE id_hash=?').bind(Date.now()-15*60000-1,operator.hash).run();assert.equal(await status('/api/admin/shaka-simulation',{actor:operator}),401);

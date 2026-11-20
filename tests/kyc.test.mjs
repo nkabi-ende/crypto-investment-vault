@@ -5,13 +5,14 @@ import {createHash,randomUUID} from 'node:crypto';
 import {build} from 'esbuild';
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
 const origin='https://cryptoinvestmentvault.com';let mf,db,member,other,reviewer;
+const ownerId=randomUUID();
 before(async()=>{
  const result=await build({entryPoints:['src/index.ts'],bundle:true,write:false,format:'esm',platform:'node',external:['node:crypto']});
- mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'kyc-tests',modules:true,script:result.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{API_LIMITER:{namespace_id:'1424211761',simple:{limit:1000,period:60}},AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:1000,period:60}}},bindings:{APP_ORIGIN:origin}}]}));db=await mf.getD1Database('DB');
+ mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'kyc-tests',modules:true,script:result.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{API_LIMITER:{namespace_id:'1424211761',simple:{limit:1000,period:60}},AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:1000,period:60}}},bindings:{APP_ORIGIN:origin,CIV_OWNER_USER_ID:ownerId,CIV_OWNER_EMAIL:'reviewer@example.invalid'}}]}));db=await mf.getD1Database('DB');
  for(const file of (await readdir('migrations')).filter(f=>f.endsWith('.sql')).sort()){
   let statement='';for(const line of (await readFile('migrations/'+file,'utf8')).replace(/--[^\n]*/g,'').split('\n')){statement+=line+'\n';if(!line.trim().endsWith(';'))continue;if(/^CREATE TRIGGER/i.test(statement.trim())&&!statement.trim().endsWith('END;'))continue;try{await db.prepare(statement.trim()).run()}catch(error){console.error('Migration failed:',file,statement.slice(0,150));throw error}statement=''}
  }
- async function account(name){const id=randomUUID(),token=randomUUID();await db.batch([db.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,name+'@example.invalid','unused','unused'),db.prepare('INSERT INTO account_profiles(user_id,display_name,terms_version) VALUES(?,?,?)').bind(id,name,'test'),db.prepare('INSERT INTO sessions(id_hash,user_id,expires_at,security_version,authenticated_at,last_seen_at) VALUES(?,?,?,1,?,?)').bind(createHash('sha256').update(token).digest('base64url'),id,Date.now()+3600000,Date.now(),Date.now())]);return {id,cookie:'__Host-civ_session='+token}}
+ async function account(name){const id=name==='reviewer'?ownerId:randomUUID(),token=randomUUID();await db.batch([db.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,name+'@example.invalid','unused','unused'),db.prepare('INSERT INTO account_profiles(user_id,display_name,terms_version) VALUES(?,?,?)').bind(id,name,'test'),db.prepare('INSERT INTO sessions(id_hash,user_id,expires_at,security_version,authenticated_at,last_seen_at) VALUES(?,?,?,1,?,?)').bind(createHash('sha256').update(token).digest('base64url'),id,Date.now()+3600000,Date.now(),Date.now())]);return {id,cookie:'__Host-civ_session='+token}}
  member=await account('member');other=await account('other');reviewer=await account('reviewer');await db.prepare('INSERT INTO kyc_reviewers(user_id,granted_by) VALUES(?,?)').bind(reviewer.id,'isolated test setup').run();
 });
 after(async()=>{await mf?.dispose()});
@@ -63,7 +64,7 @@ test('reviewer must open both documents and complete checks; approval is audited
  const audit=await db.prepare("SELECT * FROM kyc_events WHERE submission_id=? AND action='approved'").bind(state.submissionId).first();assert.equal(audit.actor_id,reviewer.id);
  await assert.rejects(db.prepare("UPDATE kyc_events SET action='changed' WHERE id=?").bind(audit.id).run());
  await db.prepare('INSERT INTO kyc_reviewers(user_id,granted_by) VALUES(?,?)').bind(member.id,'isolated self-review test').run();
- assert.equal((await call('/api/admin/kyc/'+state.submissionId+'/documents/identity')).response.status,404,'Reviewer cannot access their own case as a reviewer');
+ assert.equal((await call('/api/admin/kyc/'+state.submissionId+'/documents/identity')).response.status,403,'Reviewer cannot access their own case as a reviewer');
 });
 test('verified withdrawal requests reserve only settled funds, reject excess and deduplicate retries without executing a payout',async()=>{
  const id=randomUUID();await db.prepare("INSERT INTO ada_transactions(id,source_key,kind,status,evidence_ref,effective_at) VALUES(?,?,'funding','draft',?,CURRENT_TIMESTAMP)").bind(id,'isolated-kyc-funding-'+id,'isolated-test').run();await db.batch([db.prepare("INSERT INTO ada_postings(transaction_id,line_no,user_id,account,asset,bucket,amount_minor) VALUES(?,1,?,'customer:test','USDC','funding',100000000)").bind(id,member.id),db.prepare("INSERT INTO ada_postings(transaction_id,line_no,user_id,account,asset,bucket,amount_minor) VALUES(?,2,NULL,'external:test','USDC','clearing',-100000000)").bind(id),db.prepare("UPDATE ada_transactions SET status='posted' WHERE id=?").bind(id)]);

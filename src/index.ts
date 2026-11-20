@@ -9,15 +9,15 @@ import { adaLedger } from './ada';
 import { kycStatus,registerKycRoutes } from './kyc';
 import { shakaMethodology } from './shaka';
 import { dashboardMirror } from './dashboard-mirror';
-import { adminPage } from './admin-page';
+import { adminPage,platformReport } from './admin-page';
 import { closeShakaSimulation,scheduleSimulation,simulationAdmin,simulationLedger,verifySimulationMember } from './shaka-simulation';
 import { marketPulse,cryptoHeadlines } from './market-intelligence';
 import { marketPrices } from './market-prices';
 import { marketYtd } from './market-ytd';
 import { paymentConfig,pilotAllowed,mainnetPreflight,createQuote,verifyQuote,presentQuote,reconcilePayments,type PaymentEnv } from './payments';
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
-type Bindings = PaymentEnv & { API_LIMITER: RateLimit; AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; EMAIL_PROVIDER?: MailEnvironment['EMAIL_PROVIDER']; SIGNUP_ALERTS_ENABLED?: string; SIGNUP_ALERT_TO?: string; ZOHO_REGION?: string; ZOHO_MAIL_ACCOUNT_ID?: string; ZOHO_FROM_ADDRESS?: string; ZOHO_CLIENT_ID?: string; ZOHO_CLIENT_SECRET?: string; ZOHO_REFRESH_TOKEN?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
-type SimulationBindings = Bindings & { SHAKA_SIM_ADMIN_IDS?: string };
+type Bindings = PaymentEnv & { CIV_OWNER_USER_ID?: string; CIV_OWNER_EMAIL?: string; API_LIMITER: RateLimit; AUTH_LIMITER: RateLimit; EMAIL_DELIVERY_ENABLED?: string; RESEND_API_KEY?: string; EMAIL_FROM?: string; EMAIL_PROVIDER?: MailEnvironment['EMAIL_PROVIDER']; SIGNUP_ALERTS_ENABLED?: string; SIGNUP_ALERT_TO?: string; ZOHO_REGION?: string; ZOHO_MAIL_ACCOUNT_ID?: string; ZOHO_FROM_ADDRESS?: string; ZOHO_CLIENT_ID?: string; ZOHO_CLIENT_SECRET?: string; ZOHO_REFRESH_TOKEN?: string; DB: D1Database; ASSETS: Fetcher; APP_ORIGIN: string; FUNDING_ENABLED: string; COINGECKO_DEMO_API_KEY?: string; CRYPTOPANIC_API_TOKEN?: string; CELO_SEPOLIA_RPC_URL?: string; CELO_TEST_USDC_ADDRESS?: string; CELO_TEST_TREASURY_ADDRESS?: string };
+type SimulationBindings = Bindings;
 const app = new Hono<{Bindings:SimulationBindings}>();
 app.onError((error,c)=>{console.error('CIV request failed',c.req.path,error instanceof Error ? error.name : 'UnknownError');return c.json({error:'Account service temporarily unavailable. Please try again.'},503)});
 const smallBody=bodyLimit({maxSize:16384,onError:c=>c.json({error:'Request too large'},413)});
@@ -50,9 +50,9 @@ function currentUser<E extends {Bindings:Bindings}>(c:import('hono').Context<E>)
   const hash=await digest(token),now=Date.now();
   const row=await c.env.DB.prepare(`SELECT u.id,u.email,s.expires_at,s.authenticated_at,s.last_seen_at,
    EXISTS(SELECT 1 FROM kyc_reviewers r WHERE r.user_id=u.id AND r.enabled=1) AS reviewer
-   FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id_hash=? AND s.security_version=1`).bind(hash).first<Member&{expires_at:number,authenticated_at:number,last_seen_at:number,reviewer:number}>();
+   FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.access_state='active' AND s.id_hash=? AND s.security_version=1`).bind(hash).first<Member&{expires_at:number,authenticated_at:number,last_seen_at:number,reviewer:number}>();
   if(!row)return null;
-  const privileged=row.reviewer||isSimulationAdmin(c.env,row.id);
+  const privileged=row.reviewer||isVaultOwner(c.env,row);
   const idle=privileged?15*60000:86400000,absolute=privileged?8*3600000:7*86400000;
   if(row.expires_at<=now||row.authenticated_at<=0||row.last_seen_at<=0||row.last_seen_at>now+60000||row.authenticated_at>now+60000||now-row.last_seen_at>=idle||now-row.authenticated_at>=absolute)return null;
   if(now-row.last_seen_at>=60000)await c.env.DB.prepare('UPDATE sessions SET last_seen_at=? WHERE id_hash=? AND last_seen_at<?').bind(now,hash,now).run();
@@ -87,9 +87,48 @@ app.use('/api/*',async(c,next)=>{
  const path=c.req.path;
  if(path.startsWith('/api/investor/')||path.startsWith('/api/admin/')||path.startsWith('/api/celo/testnet/')||(path.startsWith('/api/payments/')&&path!=='/api/payments/config')){
   const user=await currentUser(c);if(!user)return c.json({error:'Unauthorized'},401);
-  if(path.startsWith('/api/admin/')){const permitted=path.startsWith('/api/admin/shaka-simulation')?isSimulationAdmin(c.env,user.id):!!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();if(!permitted)return c.json({error:'Administrator access required'},403)}
+  if(path.startsWith('/api/admin/') && !isVaultOwner(c.env,user))return c.json({error:'Administrator access required'},403);
  }
  await next();
+});
+app.post('/api/admin/operations',async c=>{
+ const owner=await currentUser(c);
+ if(!owner||!isVaultOwner(c.env,owner))return c.json({error:'Owner access required'},403);
+ const body=await c.req.json().catch(()=>null);
+ if(!body||typeof body!=='object')return c.json({error:'Invalid action'},400);
+ const {id,target,action,asset,reason,password}=body;
+ let {expected,value}=body;
+ if(![id,target,action,asset,reason,password,expected,value].every(x=>typeof x==='string'&&x.length<=500)
+ ||!/^[-a-f0-9]{36}$/i.test(id)||!target||reason.trim().length<5||!password||password.length>128)
+ return c.json({error:'A target, reason and owner password are required'},400);
+ if(!(await c.env.AUTH_LIMITER.limit({key:'owner-action:'+owner.id})).success)return c.json({error:'Try again later'},429);
+ const auth=await c.env.DB.prepare('SELECT salt,password_hash FROM users WHERE id=?').bind(owner.id).first<{salt:string,password_hash:string}>();
+ if(!auth||!same(await passwordHash(password,auth.salt),auth.password_hash))return c.json({error:'Password confirmation failed'},403);
+ switch(action){
+ case 'balance': {
+  if(!['USDC','USDT'].includes(asset)||!/^\d{1,10}(\.\d{1,6})?$/.test(value)||!/^[-]?\d+$/.test(expected))return c.json({error:'Enter an exact token balance, up to six decimal places'},400);
+  const [whole,fraction='']=value.split('.');
+  value=String(BigInt(whole)*1000000n+BigInt(fraction.padEnd(6,'0')));
+  if(!Number.isSafeInteger(Number(value))||!Number.isSafeInteger(Number(expected))||value===expected)return c.json({error:'Invalid or unchanged balance'},400);
+  break;
+ }
+ case 'email': value=value.trim().toLowerCase();if(!emailPattern.test(value)||value.length>254)return c.json({error:'Invalid email'},400);break;
+ case 'name': value=value.trim();if(value.length<2||value.length>80)return c.json({error:'Enter a name of 2–80 characters'},400);break;
+ case 'state': if(!['active','suspended','closed'].includes(value))return c.json({error:'Unknown account state'},400);break;
+ case 'referral': if(value&&!referralPattern.test(value))return c.json({error:'Enter the new referrer account ID'},400);break;
+ case 'delete': if(!emailPattern.test(value))return c.json({error:'Type the account email to confirm deletion'},400);break;
+ case 'commission': if(!['clear','hold','rejected'].includes(value))return c.json({error:'Unknown review state'},400);break;
+ case 'claim': if(!['resolved','rejected'].includes(value))return c.json({error:'Invalid claim status'},400);break;
+ case 'note': if(!value.trim())return c.json({error:'Enter a note'},400);break;
+ default:return c.json({error:'Unknown action'},400);
+ }
+ try{
+  await c.env.DB.prepare('INSERT INTO owner_operations(id,actor,target,action,value,expected,asset,reason) VALUES(?,?,?,?,?,?,?,?)').bind(id,owner.id,target,action,value,expected,asset,reason.trim()).run();
+ }catch(error){
+  const prior=await c.env.DB.prepare('SELECT id FROM owner_operations WHERE id=? AND actor=? AND target=? AND action=? AND value=? AND expected=? AND asset=? AND reason=?').bind(id,owner.id,target,action,value,expected,asset,reason.trim()).first();
+  if(!prior)return c.json({error:'Change could not be applied. Refresh the record and check its state and financial history.'},409);
+ }
+ return c.json({saved:true});
 });
 registerKycRoutes(app,currentUser);
 const emailPattern=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -119,13 +158,15 @@ app.get('/api/investor/shaka-simulation',async c=>{
  return user?c.json(await simulationLedger(c.env.DB,user.id)):c.json({error:'Unauthorized'},401);
 });
 const simulationAdminApp=new Hono<{Bindings:SimulationBindings;Variables:{adminId:string}}>();
-function isSimulationAdmin(env:SimulationBindings,userId:string){
- return env.SHAKA_SIM_ADMIN_IDS?.split(',').some(id=>id.trim()===userId) ?? false;
+function isVaultOwner(env:Bindings,user:Member){
+ const ownerId=env.CIV_OWNER_USER_ID?.trim();
+ const ownerEmail=env.CIV_OWNER_EMAIL?.trim().toLowerCase();
+ return !!ownerId && !!ownerEmail && user.id===ownerId && user.email.toLowerCase()===ownerEmail;
 }
 simulationAdminApp.use('*',async(c,next)=>{
  const user=await currentUser(c);
  if(!user)return c.json({error:'Unauthorized'},401);
- if(!isSimulationAdmin(c.env,user.id))return c.json({error:'Forbidden'},403);
+ if(!isVaultOwner(c.env,user))return c.json({error:'Forbidden'},403);
  c.set('adminId',user.id);
  await next();
 });
@@ -198,7 +239,7 @@ app.post('/api/auth/login',async c=>{
  const now=Date.now();
  const attempts=await c.env.DB.prepare('SELECT locked_until FROM auth_attempts WHERE email=?').bind(email).first<{locked_until:number}>();
  if(attempts&&attempts.locked_until>now){c.header('Retry-After',String(Math.ceil((attempts.locked_until-now)/1000)));return c.json({error:'Too many attempts. Try again later.'},429)}
- const user=await c.env.DB.prepare('SELECT id,email,password_hash,salt FROM users WHERE email=?').bind(email).first<{id:string,email:string,password_hash:string,salt:string}>();
+ const user=await c.env.DB.prepare("SELECT id,email,password_hash,salt FROM users WHERE email=? AND access_state='active'").bind(email).first<{id:string,email:string,password_hash:string,salt:string}>();
  const check=await passwordHash(password,user?.salt||'v3:fallback');
  if(!user||!same(check,user.password_hash)){
   await c.env.DB.prepare(`INSERT INTO auth_attempts(email,attempts,window_start,locked_until) VALUES(?,1,?,0)
@@ -507,10 +548,14 @@ app.get('/join',entryPage);
 app.get('/dashboard',entryPage);
 app.on('GET',['/admin','/admin/'],async c=>{
  const user=await currentUser(c);if(!user)return c.redirect('/join?returnTo=%2Fadmin',303);
- const reviewer=!!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();
- const operator=isSimulationAdmin(c.env,user.id);
- c.header('Content-Security-Policy',"default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
- return c.html(adminPage(reviewer,operator),reviewer||operator?200:403);
+ const reviewer=isVaultOwner(c.env,user) && !!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();
+ const operator=isVaultOwner(c.env,user);
+ c.header('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+ c.header('Cache-Control','private, no-store');
+ const page=Number(c.req.query('page') || 1);
+ if(!Number.isSafeInteger(page)||page<1||page>Math.floor(Number.MAX_SAFE_INTEGER/25))return c.text('Invalid page',400);
+ const report=operator?await platformReport(c.env.DB,c.req.query('view') || 'accounts',page):'';
+ return c.html(adminPage(reviewer,operator,report),reviewer||operator?200:403);
 });
 
 app.on('GET',['/dashboard/mirror','/dashboard/mirror/'],async c=>{
@@ -518,7 +563,7 @@ app.on('GET',['/dashboard/mirror','/dashboard/mirror/'],async c=>{
  c.header('X-Robots-Tag','noindex, nofollow');
  c.header('Content-Security-Policy',"default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
  const user=await currentUser(c);
- if(!user||!isSimulationAdmin(c.env,user.id))return c.notFound();
+ if(!user||!isVaultOwner(c.env,user))return c.notFound();
  return c.html(dashboardMirror);
 });
 app.get('/r/:code',async c=>{
@@ -538,7 +583,7 @@ app.get('/review-identity*',async c=>{
  const path=c.req.path;
  if(!['/review-identity','/review-identity/','/review-identity.html','/review-identity.js'].includes(path))return c.text('Not found',404);
  const user=await currentUser(c);if(!user)return path.endsWith('.js')?c.text('Unauthorized',401):c.redirect('/join',303);
- if(!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first())return c.text('Access denied',403);
+ if(!isVaultOwner(c.env,user) || !await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first())return c.text('Access denied',403);
  const target=path.endsWith('.js')?'/review-identity.js':'/review-identity';
  return c.env.ASSETS.fetch(new Request(new URL(target,c.req.url)));
 });

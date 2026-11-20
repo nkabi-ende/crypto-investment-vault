@@ -11,7 +11,7 @@ export async function membership(db:D1Database,userId:string) {
    JOIN member_activation m ON m.user_id=a.user_id WHERE r.user_id=? AND m.active=1) END AS progress
    FROM member_perks p WHERE p.status='published' ORDER BY p.threshold,p.id`).bind(userId),
   db.prepare('SELECT amount_minor,status FROM deposit_promotions WHERE user_id=?').bind(userId),
-  db.prepare('SELECT asset,SUM(amount_minor-refunded_minor) AS amount_minor FROM funding_receipts WHERE user_id=? GROUP BY asset').bind(userId),
+  db.prepare("SELECT asset,SUM(amount_minor) AS amount_minor FROM ada_balances WHERE user_id=? AND bucket IN ('funding','realized') GROUP BY asset").bind(userId),
   db.prepare('SELECT code FROM referral_aliases WHERE user_id=?').bind(userId),
   db.prepare("SELECT COALESCE(SUM(CASE WHEN status IN ('credited','approved') THEN amount_minor ELSE 0 END),0) AS credited,COALESCE(SUM(CASE WHEN status IN ('suspended','review') THEN amount_minor ELSE 0 END),0) AS suspended,COALESCE(SUM(CASE WHEN status='pending' THEN amount_minor ELSE 0 END),0) AS pending FROM (SELECT user_id,amount_minor,status FROM referral_wallet UNION ALL SELECT user_id,amount_minor,status FROM circle_wallet) WHERE user_id=?").bind(userId)
  ]);

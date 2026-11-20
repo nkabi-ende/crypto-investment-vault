@@ -26,7 +26,7 @@ export async function adaLedger(db:D1Database,userId:string){
  return {name:'ADA Ledger',asOf:timestamps[0]||null,refreshedAt:new Date().toISOString(),currency:'STABLECOINS',
   balanceUsdc:assets[0].cashMinor/1e6,balanceUsdt:assets[1].cashMinor/1e6,assets,
   daily:{tradingDay:day,timeZone:'Africa/Johannesburg',status:today.length?'reconciled':'pending',results:today.map(c=>({asset:c.asset,realizedMinor:c.realized_minor,unrealizedMinor:c.unrealized_minor,asOf:c.effective_at}))},
-  entries:entries.results.map((e:any)=>({id:e.id,type:e.kind==='funding'?'verified_deposit':e.kind==='performance'?'daily_'+e.bucket:e.kind,amountUsdt:e.amount_minor/1e6,amountMinor:e.amount_minor,asset:e.asset,bucket:e.bucket,at:e.effective_at})),
+  entries:entries.results.map((e:any)=>({id:e.id,type:e.id.startsWith('correction:')?'balance_correction':e.kind==='funding'?'verified_deposit':e.kind==='performance'?'daily_'+e.bucket:e.kind,amountUsdt:e.amount_minor/1e6,amountMinor:e.amount_minor,asset:e.asset,bucket:e.bucket,at:e.effective_at})),
   promotion:promo.results[0]||null,withdrawalRequests:withdrawals.results,withdrawalsEnabled:false,payoutsEnabled:false,
   valuationPolicy:'Asset-specific posted entries. Unrealised valuations and promotional credits are separate from settled funds.'};
 }
