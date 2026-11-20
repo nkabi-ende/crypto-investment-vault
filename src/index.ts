@@ -1,4 +1,4 @@
-import { pbkdf2Sync } from 'node:crypto';
+import { derivePassword } from './password-digest';
 import { Hono } from 'hono';
 import { secureFetch,sessionCookieName } from './security';
 import { bodyLimit } from 'hono/body-limit';
@@ -28,8 +28,8 @@ const rand = (n=32)=>b64(crypto.getRandomValues(new Uint8Array(n)));
 async function digest(s:string){return b64(new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(s))))}
 async function passwordHash(password:string,salt:string) {
  // Version 3 uses standard PBKDF2-HMAC-SHA256. Older digests upgrade after a valid login.
- if (salt.startsWith('v3:')) return b64(pbkdf2Sync(password,salt,600000,32,'sha256'));
- if (!salt.startsWith('v2:')) return b64(pbkdf2Sync(password,salt,310000,32,'sha256'));
+ if (salt.startsWith('v3:')) return b64(derivePassword(password,salt,600000));
+ if (!salt.startsWith('v2:')) return b64(derivePassword(password,salt,310000));
  let material = enc.encode(password);
  for (let round=0; round<3; round++) {
    const key=await crypto.subtle.importKey('raw',material,'PBKDF2',false,['deriveBits']);
@@ -498,6 +498,8 @@ app.get('/api/status',c=>c.json({platform:'Crypto Investment Vault',product:'The
 app.get('/api/ready',async c=>{
  // Preparing these queries validates required columns as well as table presence.
  await c.env.DB.batch([
+  c.env.DB.prepare('SELECT id,email,password_hash,salt,access_state FROM users LIMIT 0'),
+  c.env.DB.prepare('SELECT email,attempts,window_start,locked_until FROM auth_attempts LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,display_name,terms_version FROM account_profiles LIMIT 0'),
   c.env.DB.prepare('SELECT user_id,code FROM referral_attributions LIMIT 0'),
   c.env.DB.prepare('SELECT status,available_at,lease_until FROM email_outbox LIMIT 0'),
@@ -530,7 +532,7 @@ app.get('/api/ready',async c=>{
   c.env.DB.prepare('SELECT user_id,terms_version,accepted_at FROM affiliate_consents LIMIT 0'),
   c.env.DB.prepare('SELECT security_version,authenticated_at,last_seen_at FROM sessions LIMIT 0')
  ]);
- return c.json({ready:true,schema:22,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
+ return c.json({ready:true,schema:23,membershipDepositsEnabled:false,pilotOnly:true,registrationEnabled:true,emailDelivery:envEmailStatus(c.env),liveDepositsEnabled:false});
 });
 app.all('/api/*',c=>c.json({error:'Not found'},404));
 // Return the complete signup page to social crawlers without needing client JavaScript.

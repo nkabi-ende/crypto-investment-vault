@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 const origin=process.env.CIV_ORIGIN||'https://cryptoinvestmentvault.com';
 async function json(path){const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);return r.json()}
 const status=await json('/api/status');assert.equal(status.release,'stablecoin-funding-v4');assert.equal(status.fundingEnabled,false);assert.equal(status.liveTradingEnabled,false);assert.equal(status.membershipDepositsEnabled,false);assert.equal(status.pilotOnly,true);
-const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,22);
+const ready=await json('/api/ready');assert.equal(ready.ready,true);assert.equal(ready.schema,23);
 for(const path of ['/join']){
  const r=await fetch(new URL(path,origin),{signal:AbortSignal.timeout(15000)});assert.equal(r.status,200,path);const html=await r.text();assert.ok(html.includes('id="authForm"'));assert.ok(html.includes('id="vaultLoader"'));assert.ok(html.includes('class="site-footer"'));assert.ok(html.includes('/civ-mark.svg'));assert.ok(html.includes('og-invitation-v3.png'));assert.ok(html.includes('Choose a $100 or $200 account'));assert.doesNotMatch(html.split('</head>')[0],/R1,000/);assert.ok(html.includes('id="shaka-strategy"'));assert.ok(html.includes('id="circle-leaderboard"'));assert.doesNotMatch(html,/id="asset-guide"|href="#asset-guide"/);
  assert.ok(html.includes('id="minipay-start"'),'MiniPay education must be present on signup entry');
@@ -75,3 +75,11 @@ const adminCss=await fetch(new URL('/admin.css',origin));assert.equal(adminCss.s
 for(const path of ['/.env','/src/index.ts','/index.html.map']){const response=await fetch(new URL(path,origin));assert.equal(response.status,404);await response.text()}
 const csrf=await fetch(new URL('/api/auth/logout',origin),{method:'POST',headers:{Origin:'https://untrusted.invalid'}});assert.equal(csrf.status,403);await csrf.text();
 console.log('Security checks passed: enforced script nonces, private cache boundaries, protected reviewer resources, source artifacts blocked and cross-origin writes refused.');
+
+// Exercise the deployed credential path with a fresh, reserved-domain identity.
+const rejectedLogin=await fetch(new URL('/api/auth/login',origin),{
+ method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},
+ body:JSON.stringify({email:crypto.randomUUID()+'@example.invalid',password:crypto.randomUUID()}),
+ signal:AbortSignal.timeout(20000)
+});
+assert.equal(rejectedLogin.status,401,'Production sign-in must complete credential verification');
