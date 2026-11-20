@@ -29,9 +29,10 @@ async function digest(s:string){return b64(new Uint8Array(await crypto.subtle.di
 async function passwordHash(password:string,salt:string) {
  // Version 3 uses standard PBKDF2-HMAC-SHA256. Older digests upgrade after a valid login.
  if (salt.startsWith('v3:')) return b64(derivePassword(password,salt,600000));
- if (!salt.startsWith('v2:')) return b64(derivePassword(password,salt,310000));
+ if (!salt.startsWith('v2:') && !salt.startsWith('v4:')) return b64(derivePassword(password,salt,310000));
  let material = enc.encode(password);
- for (let round=0; round<3; round++) {
+ const rounds=salt.startsWith('v4:')?6:3;
+ for (let round=0; round<rounds; round++) {
    const key=await crypto.subtle.importKey('raw',material,'PBKDF2',false,['deriveBits']);
    const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:enc.encode(salt+':'+round),iterations:100000},key,256);
    material=new Uint8Array(bits);
@@ -210,7 +211,7 @@ app.post('/api/auth/register',async c=>{
   const record=await c.env.DB.prepare('SELECT r.code FROM referral_codes r LEFT JOIN referral_aliases a ON a.user_id=r.user_id WHERE (r.code=? OR r.user_id=? OR a.code=?) AND r.user_id IS NOT NULL').bind(referral,referral,referral).first<{code:string}>();
   attributedCode=record?.code||null;
  }
- const id=crypto.randomUUID(),salt='v3:'+rand(16),hash=await passwordHash(password,salt);
+ const id=crypto.randomUUID(),salt='v4:'+rand(16),hash=await passwordHash(password,salt);
  const writes=[
   c.env.DB.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,email,hash,salt),
   c.env.DB.prepare('INSERT INTO portfolios(user_id) VALUES(?)').bind(id),
@@ -240,7 +241,7 @@ app.post('/api/auth/login',async c=>{
  const attempts=await c.env.DB.prepare('SELECT locked_until FROM auth_attempts WHERE email=?').bind(email).first<{locked_until:number}>();
  if(attempts&&attempts.locked_until>now){c.header('Retry-After',String(Math.ceil((attempts.locked_until-now)/1000)));return c.json({error:'Too many attempts. Try again later.'},429)}
  const user=await c.env.DB.prepare("SELECT id,email,password_hash,salt FROM users WHERE email=? AND access_state='active'").bind(email).first<{id:string,email:string,password_hash:string,salt:string}>();
- const check=await passwordHash(password,user?.salt||'v3:fallback');
+ const check=await passwordHash(password,user?.salt||'v4:fallback');
  if(!user||!same(check,user.password_hash)){
   await c.env.DB.prepare(`INSERT INTO auth_attempts(email,attempts,window_start,locked_until) VALUES(?,1,?,0)
    ON CONFLICT(email) DO UPDATE SET
@@ -251,7 +252,7 @@ app.post('/api/auth/login',async c=>{
   return c.json({error:'Invalid credentials'},401);
  }
  const writes=[c.env.DB.prepare('DELETE FROM auth_attempts WHERE email=?').bind(email)];
- if(!user.salt.startsWith('v3:')){const salt='v3:'+rand(16);writes.push(c.env.DB.prepare('UPDATE users SET password_hash=?,salt=? WHERE id=? AND password_hash=?').bind(await passwordHash(password,salt),salt,user.id,user.password_hash))}
+ if(!user.salt.startsWith('v4:')){const salt='v4:'+rand(16);writes.push(c.env.DB.prepare('UPDATE users SET password_hash=?,salt=? WHERE id=? AND password_hash=?').bind(await passwordHash(password,salt),salt,user.id,user.password_hash))}
  await session(c,user.id,writes);
  return c.json({user:{id:user.id,email:user.email}});
 });

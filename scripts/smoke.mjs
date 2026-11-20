@@ -59,7 +59,7 @@ assert.equal(ready.liveDepositsEnabled,false);
 const preflight=await fetch(new URL('/api/payments/preflight',origin));assert.equal(preflight.status,401,'Mainnet diagnostics must be private');
 const anonymousQuote=await fetch(new URL('/api/payments/quotes',origin),{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({symbol:'USDC',amount:100,sender:'0x'+'1'.repeat(40)})});assert.equal(anonymousQuote.status,401,'Anonymous users cannot create mainnet quotes');
 const celo=await json('/api/celo/config');assert.equal(celo.liveDepositsEnabled,false);assert.equal(celo.livePayoutsEnabled,false);
-console.log('CIV production checks passed: schema 22, signup and referral HTML, PNG preview, private API boundaries, pilot-only production deposits, public collection disabled, trading and withdrawals off.');
+console.log('CIV production checks passed: schema 23, signup and referral HTML, PNG preview, private API boundaries, pilot-only production deposits, public collection disabled, trading and withdrawals off.');
 
 for(const path of ['/','/dashboard']){
  const response=await fetch(new URL(path,origin)),html=await response.text();assert.equal(response.status,200);

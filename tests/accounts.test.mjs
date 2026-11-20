@@ -307,16 +307,16 @@ test('calendar YTD uses January 1 history, shared leases, cached baselines and h
  }finally{globalThis.fetch=prior}
 });
 
-test('successful legacy logins atomically upgrade both older password formats to standard PBKDF2',async()=>{
+test('successful legacy logins atomically upgrade older password formats to the Workers-compatible format',async()=>{
  const password='isolated legacy migration passphrase';
- for(const salt of ['legacy-isolated-salt','v2:isolated-legacy-salt']){
+ for(const salt of ['legacy-isolated-salt','v2:isolated-legacy-salt','v3:isolated-legacy-salt']){
   let hash;
   if(salt.startsWith('v2:')){let material=Buffer.from(password);for(let round=0;round<3;round++)material=pbkdf2Sync(material,salt+':'+round,100000,32,'sha256');hash=material.toString('base64url')}
-  else hash=pbkdf2Sync(password,salt,310000,32,'sha256').toString('base64url');
+  else hash=pbkdf2Sync(password,salt,salt.startsWith('v3:')?600000:310000,32,'sha256').toString('base64url');
   const id=randomUUID(),email=id+'@example.invalid';await db.prepare('INSERT INTO users(id,email,password_hash,salt) VALUES(?,?,?,?)').bind(id,email,hash,salt).run();
   const rejected=await call('/api/auth/login',{method:'POST',body:{email,password:'incorrect isolated password'}});assert.equal(rejected.r.status,401);assert.equal((await db.prepare('SELECT salt FROM users WHERE id=?').bind(id).first()).salt,salt);
   const login=await call('/api/auth/login',{method:'POST',body:{email,password}});assert.equal(login.r.status,200);assert.match(login.r.headers.get('set-cookie'),/^__Host-civ_session=/);
-  const stored=await db.prepare('SELECT password_hash,salt FROM users WHERE id=?').bind(id).first();assert.match(stored.salt,/^v3:/);assert.equal(stored.password_hash,pbkdf2Sync(password,stored.salt,600000,32,'sha256').toString('base64url'));
+  const stored=await db.prepare('SELECT password_hash,salt FROM users WHERE id=?').bind(id).first();assert.match(stored.salt,/^v4:/);let expected=Buffer.from(password);for(let i=0;i<6;i++)expected=pbkdf2Sync(expected,stored.salt+':'+i,100000,32,'sha256');assert.equal(stored.password_hash,expected.toString('base64url'));
   assert.equal((await call('/api/me',{cookie:login.cookie})).r.status,200);
  }
 });
