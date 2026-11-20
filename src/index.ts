@@ -50,7 +50,7 @@ function currentUser<E extends {Bindings:Bindings}>(c:import('hono').Context<E>)
   const hash=await digest(token),now=Date.now();
   const row=await c.env.DB.prepare(`SELECT u.id,u.email,s.expires_at,s.authenticated_at,s.last_seen_at,
    EXISTS(SELECT 1 FROM kyc_reviewers r WHERE r.user_id=u.id AND r.enabled=1) AS reviewer
-   FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id_hash=? AND s.security_version=1`).bind(hash).first<Member&{expires_at:number,authenticated_at:number,last_seen_at:number,reviewer:number}>();
+   FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.access_state='active' AND s.id_hash=? AND s.security_version=1`).bind(hash).first<Member&{expires_at:number,authenticated_at:number,last_seen_at:number,reviewer:number}>();
   if(!row)return null;
   const privileged=row.reviewer||isVaultOwner(c.env,row);
   const idle=privileged?15*60000:86400000,absolute=privileged?8*3600000:7*86400000;
@@ -90,6 +90,45 @@ app.use('/api/*',async(c,next)=>{
   if(path.startsWith('/api/admin/') && !isVaultOwner(c.env,user))return c.json({error:'Administrator access required'},403);
  }
  await next();
+});
+app.post('/api/admin/operations',async c=>{
+ const owner=await currentUser(c);
+ if(!owner||!isVaultOwner(c.env,owner))return c.json({error:'Owner access required'},403);
+ const body=await c.req.json().catch(()=>null);
+ if(!body||typeof body!=='object')return c.json({error:'Invalid action'},400);
+ const {id,target,action,asset,reason,password}=body;
+ let {expected,value}=body;
+ if(![id,target,action,asset,reason,password,expected,value].every(x=>typeof x==='string'&&x.length<=500)
+ ||!/^[-a-f0-9]{36}$/i.test(id)||!target||reason.trim().length<5||!password||password.length>128)
+ return c.json({error:'A target, reason and owner password are required'},400);
+ if(!(await c.env.AUTH_LIMITER.limit({key:'owner-action:'+owner.id})).success)return c.json({error:'Try again later'},429);
+ const auth=await c.env.DB.prepare('SELECT salt,password_hash FROM users WHERE id=?').bind(owner.id).first<{salt:string,password_hash:string}>();
+ if(!auth||!same(await passwordHash(password,auth.salt),auth.password_hash))return c.json({error:'Password confirmation failed'},403);
+ switch(action){
+ case 'balance': {
+  if(!['USDC','USDT'].includes(asset)||!/^\d{1,10}(\.\d{1,6})?$/.test(value)||!/^[-]?\d+$/.test(expected))return c.json({error:'Enter an exact token balance, up to six decimal places'},400);
+  const [whole,fraction='']=value.split('.');
+  value=String(BigInt(whole)*1000000n+BigInt(fraction.padEnd(6,'0')));
+  if(!Number.isSafeInteger(Number(value))||!Number.isSafeInteger(Number(expected))||value===expected)return c.json({error:'Invalid or unchanged balance'},400);
+  break;
+ }
+ case 'email': value=value.trim().toLowerCase();if(!emailPattern.test(value)||value.length>254)return c.json({error:'Invalid email'},400);break;
+ case 'name': value=value.trim();if(value.length<2||value.length>80)return c.json({error:'Enter a name of 2–80 characters'},400);break;
+ case 'state': if(!['active','suspended','closed'].includes(value))return c.json({error:'Unknown account state'},400);break;
+ case 'referral': if(value&&!referralPattern.test(value))return c.json({error:'Enter the new referrer account ID'},400);break;
+ case 'delete': if(!emailPattern.test(value))return c.json({error:'Type the account email to confirm deletion'},400);break;
+ case 'commission': if(!['clear','hold','rejected'].includes(value))return c.json({error:'Unknown review state'},400);break;
+ case 'claim': if(!['resolved','rejected'].includes(value))return c.json({error:'Invalid claim status'},400);break;
+ case 'note': if(!value.trim())return c.json({error:'Enter a note'},400);break;
+ default:return c.json({error:'Unknown action'},400);
+ }
+ try{
+  await c.env.DB.prepare('INSERT INTO owner_operations(id,actor,target,action,value,expected,asset,reason) VALUES(?,?,?,?,?,?,?,?)').bind(id,owner.id,target,action,value,expected,asset,reason.trim()).run();
+ }catch(error){
+  const prior=await c.env.DB.prepare('SELECT id FROM owner_operations WHERE id=? AND actor=? AND target=? AND action=? AND value=? AND expected=? AND asset=? AND reason=?').bind(id,owner.id,target,action,value,expected,asset,reason.trim()).first();
+  if(!prior)return c.json({error:'Change could not be applied. Refresh the record and check its state and financial history.'},409);
+ }
+ return c.json({saved:true});
 });
 registerKycRoutes(app,currentUser);
 const emailPattern=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -200,7 +239,7 @@ app.post('/api/auth/login',async c=>{
  const now=Date.now();
  const attempts=await c.env.DB.prepare('SELECT locked_until FROM auth_attempts WHERE email=?').bind(email).first<{locked_until:number}>();
  if(attempts&&attempts.locked_until>now){c.header('Retry-After',String(Math.ceil((attempts.locked_until-now)/1000)));return c.json({error:'Too many attempts. Try again later.'},429)}
- const user=await c.env.DB.prepare('SELECT id,email,password_hash,salt FROM users WHERE email=?').bind(email).first<{id:string,email:string,password_hash:string,salt:string}>();
+ const user=await c.env.DB.prepare("SELECT id,email,password_hash,salt FROM users WHERE email=? AND access_state='active'").bind(email).first<{id:string,email:string,password_hash:string,salt:string}>();
  const check=await passwordHash(password,user?.salt||'v3:fallback');
  if(!user||!same(check,user.password_hash)){
   await c.env.DB.prepare(`INSERT INTO auth_attempts(email,attempts,window_start,locked_until) VALUES(?,1,?,0)
@@ -511,7 +550,7 @@ app.on('GET',['/admin','/admin/'],async c=>{
  const user=await currentUser(c);if(!user)return c.redirect('/join?returnTo=%2Fadmin',303);
  const reviewer=isVaultOwner(c.env,user) && !!await c.env.DB.prepare('SELECT user_id FROM kyc_reviewers WHERE user_id=? AND enabled=1').bind(user.id).first();
  const operator=isVaultOwner(c.env,user);
- c.header('Content-Security-Policy',"default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+ c.header('Content-Security-Policy',"default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
  c.header('Cache-Control','private, no-store');
  const page=Number(c.req.query('page') || 1);
  if(!Number.isSafeInteger(page)||page<1||page>Math.floor(Number.MAX_SAFE_INTEGER/25))return c.text('Invalid page',400);

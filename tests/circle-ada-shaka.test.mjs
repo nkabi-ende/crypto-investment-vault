@@ -33,7 +33,7 @@ async function call(path,{cookie,body,method='GET'}={}){const r=await mf.dispatc
 let legacyOwner,legacyMember;
 before(async()=>{
  const built=await build({entryPoints:['src/index.ts'],bundle:true,write:false,format:'esm',platform:'node',external:['node:crypto']});
- mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'circle-test',modules:true,script:built.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{API_LIMITER:{namespace_id:'1424211761',simple:{limit:1000,period:60}},AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:100,period:60}}},assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:true},bindings:{APP_ORIGIN:origin,EMAIL_DELIVERY_ENABLED:'false',SHAKA_SIM_ADMIN_IDS:simulationAdminId}}]}));
+ mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',workers:[{name:'circle-test',modules:true,script:built.outputFiles[0].text,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],ratelimits:{API_LIMITER:{namespace_id:'1424211761',simple:{limit:1000,period:60}},AUTH_LIMITER:{namespace_id:'1424211760',simple:{limit:100,period:60}}},assets:{routerConfig:{has_user_worker:true},directory:'public',binding:'ASSETS',run_worker_first:true},bindings:{APP_ORIGIN:origin,EMAIL_DELIVERY_ENABLED:'false',CIV_OWNER_USER_ID:simulationAdminId,CIV_OWNER_EMAIL:simulationAdminId+'@example.invalid'}}]}));
  db=await mf.getD1Database('DB');
  for(const file of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort()){
   if(file.startsWith('0014')){legacyOwner=await user();legacyMember=await user(legacyOwner);await fund(legacyMember,100)}
